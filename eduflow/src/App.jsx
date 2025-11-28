@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 // Firebase Imports (Ensure you have firebase.js set up)
 import { auth, db } from './firebase'; 
 import { createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth';
-import { doc, setDoc, getDoc, collection, addDoc, onSnapshot, updateDoc, arrayUnion } from 'firebase/firestore';
+import { doc, setDoc, getDoc, collection, addDoc, onSnapshot, updateDoc, arrayUnion, deleteDoc, query, where, orderBy } from 'firebase/firestore';
 
 // UI Icons
 import { 
@@ -15,6 +15,15 @@ import {
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts';
 import { motion, AnimatePresence } from 'framer-motion';
 
+
+const fileToBase64 = (file) => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = (error) => reject(error);
+  });
+};
 // ==========================================
 // 1. UTILITIES & DATA
 // ==========================================
@@ -379,27 +388,70 @@ const DashboardView = ({ user, courses, onJoin }) => {
 };
 
 // --- NEW: KANBAN BOARD COMPONENT ---
-const KanbanBoard = () => {
-  const [tasks, setTasks] = useState([
-    { id: 1, text: "Selesaikan Bab 1 Matematika", status: "todo", color: "bg-red-100 border-red-200" },
-    { id: 2, text: "Beli buku catatan baru", status: "doing", color: "bg-blue-100 border-blue-200" },
-    { id: 3, text: "Daftar ulang semester", status: "done", color: "bg-green-100 border-green-200" }
-  ]);
+// --- REAL-TIME KANBAN BOARD (CONNECTED TO FIREBASE) ---
+const KanbanBoard = ({ user }) => {
+  const [tasks, setTasks] = useState([]);
   const [newTask, setNewTask] = useState("");
+  const [loading, setLoading] = useState(true);
 
-  const addTask = () => {
+  // 1. Fetch Tasks Real-time
+  useEffect(() => {
+    if (!user) return;
+    
+    // Query: Get tasks belonging to THIS user, ordered by time
+    const q = query(
+      collection(db, "tasks"), 
+      where("uid", "==", user.uid),
+      orderBy("createdAt", "desc")
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const tasksData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setTasks(tasksData);
+      setLoading(false);
+    }, (error) => {
+        console.error("Error fetching tasks:", error);
+        setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // 2. Add Task to Database
+  const addTask = async () => {
     if (!newTask.trim()) return;
-    const task = { id: Date.now(), text: newTask, status: "todo", color: "bg-white border-slate-200" };
-    setTasks([...tasks, task]);
-    setNewTask("");
+    try {
+      await addDoc(collection(db, "tasks"), {
+        uid: user.uid,
+        text: newTask,
+        status: "todo",
+        color: "bg-white border-slate-200",
+        createdAt: new Date()
+      });
+      setNewTask("");
+    } catch (error) {
+      console.error("Error adding task:", error);
+    }
   };
 
-  const moveTask = (id, newStatus) => {
-    setTasks(tasks.map(t => t.id === id ? { ...t, status: newStatus } : t));
+  // 3. Update Task Status in Database
+  const moveTask = async (id, newStatus) => {
+    try {
+      await updateDoc(doc(db, "tasks", id), { status: newStatus });
+    } catch (error) {
+      console.error("Error moving task:", error);
+    }
   };
 
-  const deleteTask = (id) => {
-    setTasks(tasks.filter(t => t.id !== id));
+  // 4. Delete Task from Database
+  const deleteTask = async (id) => {
+    if(window.confirm("Hapus tugas ini?")) {
+      try {
+        await deleteDoc(doc(db, "tasks", id));
+      } catch (error) {
+        console.error("Error deleting task:", error);
+      }
+    }
   };
 
   const Column = ({ title, status, icon: Icon, color }) => (
@@ -407,12 +459,14 @@ const KanbanBoard = () => {
       <div className={`flex items-center gap-2 mb-4 p-3 rounded-xl ${color} bg-opacity-20 text-slate-700 font-bold`}>
         <Icon size={20} /> {title} <span className="ml-auto bg-white px-2 py-0.5 rounded-md text-xs border shadow-sm">{tasks.filter(t => t.status === status).length}</span>
       </div>
-      <div className="flex-1 overflow-y-auto space-y-3">
+      <div className="flex-1 overflow-y-auto space-y-3 custom-scrollbar pr-2">
+        {loading && status === 'todo' && <p className="text-slate-400 text-xs text-center">Memuat...</p>}
+        
         {tasks.filter(t => t.status === status).map(task => (
-          <div key={task.id} className={`p-4 rounded-xl border-2 shadow-sm flex flex-col gap-3 bg-white ${task.color} hover:shadow-md transition-all group`}>
+          <div key={task.id} className={`p-4 rounded-xl border-2 shadow-sm flex flex-col gap-3 bg-white ${task.color} hover:shadow-md transition-all group animate-in fade-in zoom-in duration-300`}>
             <p className="text-sm font-medium text-slate-700">{task.text}</p>
             <div className="flex justify-between items-center pt-2 border-t border-slate-100/50">
-              <button onClick={() => deleteTask(task.id)} className="text-slate-300 hover:text-red-500"><Trash2 size={16}/></button>
+              <button onClick={() => deleteTask(task.id)} className="text-slate-300 hover:text-red-500 transition-colors"><Trash2 size={16}/></button>
               <div className="flex gap-1">
                 {status !== 'todo' && <button onClick={() => moveTask(task.id, status === 'done' ? 'doing' : 'todo')} className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-500"><ArrowLeft size={16}/></button>}
                 {status !== 'done' && <button onClick={() => moveTask(task.id, status === 'todo' ? 'doing' : 'done')} className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-500"><ArrowRight size={16}/></button>}
@@ -425,7 +479,7 @@ const KanbanBoard = () => {
         <div className="mt-4 pt-4 border-t border-slate-200">
            <div className="flex gap-2">
               <input value={newTask} onChange={(e) => setNewTask(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && addTask()} placeholder="+ Tugas baru..." className="flex-1 bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:border-teal-500" />
-              <button onClick={addTask} className="bg-teal-600 text-white p-2 rounded-xl hover:bg-teal-700"><Plus size={20}/></button>
+              <button onClick={addTask} className="bg-teal-600 text-white p-2 rounded-xl hover:bg-teal-700 shadow-md"><Plus size={20}/></button>
            </div>
         </div>
       )}
@@ -1483,28 +1537,64 @@ const TeacherCourseManager = ({ course, onBack, onUpdateModules, onGradeSubmissi
       if(q && a && b) { setQuizQuestions([...quizQuestions, { questionText: q, options: [ {answerText: a, isCorrect: correct==="0"}, {answerText: b, isCorrect: correct==="1"} ] }]); document.getElementById('qText').value = ""; document.getElementById('optA').value = ""; document.getElementById('optB').value = ""; } else alert("Isi semua field");
   };
 
+  // --- THE CRITICAL FIX IS HERE ---
   const handleSaveItem = async () => {
     if (!title) { alert("Mohon isi judul."); return; }
-    setUploading(true); await new Promise(resolve => setTimeout(resolve, 500)); 
+    setUploading(true); 
+    
     try {
       let newItem = { id: Date.now(), title: title, completed: false };
-      if (addType === 'link') { newItem.type = 'video'; newItem.url = linkUrl; newItem.isYoutube = linkUrl.includes('youtube') || linkUrl.includes('youtu.be'); } 
+      
+      if (addType === 'link') { 
+          newItem.type = 'video'; 
+          newItem.url = linkUrl; 
+          newItem.isYoutube = linkUrl.includes('youtube') || linkUrl.includes('youtu.be'); 
+      } 
       else if (addType === 'assignment') {
-        newItem.type = 'assignment'; newItem.deadline = deadline || 'Minggu Depan';
-        if (assignAttachType === 'file' && assignFile) newItem.attachment = { type: 'file', title: assignFile.name, url: URL.createObjectURL(assignFile) }; 
-        else if (assignAttachType === 'link' && assignLink) newItem.attachment = { type: 'link', title: "Link", url: assignLink };
+        newItem.type = 'assignment'; 
+        newItem.deadline = deadline || 'Minggu Depan';
+        
+        // Fix Assignment Attachment Persistence
+        if (assignAttachType === 'file' && assignFile) {
+             const base64Attach = await fileToBase64(assignFile);
+             newItem.attachment = { type: 'file', title: assignFile.name, url: base64Attach }; 
+        }
+        else if (assignAttachType === 'link' && assignLink) {
+             newItem.attachment = { type: 'link', title: "Link", url: assignLink };
+        }
       }
-      else if (addType === 'quiz') { newItem.type = 'quiz'; newItem.questions = quizQuestions; }
-      else { newItem.type = file?.type.includes('video') ? 'video' : 'file'; newItem.url = URL.createObjectURL(file); newItem.size = (file.size / 1024 / 1024).toFixed(2) + ' MB'; }
+      else if (addType === 'quiz') { 
+          newItem.type = 'quiz'; 
+          newItem.questions = quizQuestions; 
+      }
+      else { 
+          // FILE UPLOAD FIX
+          newItem.type = file?.type.includes('video') ? 'video' : 'file';
+          if (file) {
+              const base64 = await fileToBase64(file); // Convert to text string
+              newItem.url = base64; // Save text string, NOT blob URL
+              newItem.fileName = file.name;
+          }
+      }
+
       const updatedModules = safeModules.map((mod, idx) => idx === targetModuleIdx ? { ...mod, items: [...mod.items, newItem] } : mod);
-      onUpdateModules(course.id, updatedModules);
+      
+      // Save to Firebase
+      await onUpdateModules(course.id, updatedModules);
+      
       setShowAddMaterial(false); setTitle(""); setFile(null); setLinkUrl(""); setDeadline(""); setAssignAttachType('none'); setAssignFile(null); setAssignLink(""); setQuizQuestions([]);
-    } catch (error) { console.error(error); alert("Gagal menyimpan."); } finally { setUploading(false); }
+      alert("Item berhasil disimpan!");
+    } catch (error) { 
+        console.error(error); 
+        alert("Gagal menyimpan. File mungkin terlalu besar (Max 1MB untuk database ini)."); 
+    } finally { 
+        setUploading(false); 
+    }
   };
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-4 bg-white p-4 rounded-xl border border-slate-200 shadow-sm"><button onClick={onBack} className="p-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-500 hover:text-teal-700"><ChevronRight className="rotate-180" /></button><div className="flex-1"><h2 className="text-2xl font-bold text-slate-800">{course.title}</h2><p className="text-sm text-slate-500">Kode: {course.code}</p></div><button onClick={handleSetMeeting} className={`flex items-center gap-2 px-4 py-2 rounded-lg font-bold text-sm transition-all ${course.meetingLink ? 'bg-red-50 text-red-600 border border-red-100' : 'bg-slate-100 text-slate-500'}`}><Video size={18} /> {course.meetingLink ? "Edit Link" : "Set Live"}</button></div>
+      <div className="flex items-center gap-4 bg-white p-4 rounded-xl border border-slate-200 shadow-sm"><button onClick={onBack} className="p-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-500 hover:text-teal-700"><ChevronLeft className="" /></button><div className="flex-1"><h2 className="text-2xl font-bold text-slate-800">{course.title}</h2><p className="text-sm text-slate-500">Kode: {course.code}</p></div><button onClick={handleSetMeeting} className={`flex items-center gap-2 px-4 py-2 rounded-lg font-bold text-sm transition-all ${course.meetingLink ? 'bg-red-50 text-red-600 border border-red-100' : 'bg-slate-100 text-slate-500'}`}><Video size={18} /> {course.meetingLink ? "Edit Link" : "Set Live"}</button></div>
       <div className="flex border-b border-slate-200 bg-white px-6 rounded-t-2xl pt-2">{[{ id: 'materi', label: 'Materi', icon: BookOpen }, { id: 'diskusi', label: 'Forum', icon: MessageSquare }, { id: 'absensi', label: 'Absensi', icon: ClipboardList }, { id: 'nilai', label: 'Nilai', icon: Award }].map((tab) => (<button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex items-center gap-2 px-6 py-4 font-bold text-sm border-b-2 transition-all ${activeTab === tab.id ? 'border-teal-600 text-teal-700' : 'border-transparent text-slate-500 hover:text-teal-600'}`}><tab.icon size={18} /> {tab.label}</button>))}</div>
       {activeTab === 'materi' && (
         <div className="bg-white border border-slate-200 rounded-b-2xl p-6 shadow-sm rounded-tr-2xl mt-[-1px]"><div className="flex justify-between items-center mb-6"><h3 className="text-lg font-bold text-slate-800">Struktur Kelas</h3><button onClick={handleCreateModule} className="flex items-center gap-2 bg-teal-700 hover:bg-teal-800 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-lg shadow-teal-700/20"><FolderPlus size={18} /> Tambah Bab</button></div>
@@ -1540,6 +1630,7 @@ const TeacherCourseManager = ({ course, onBack, onUpdateModules, onGradeSubmissi
 };
 
 // --- UPGRADED STUDENT VIEW (With Flashcards) ---
+// --- UPGRADED STUDENT VIEW (With Permanent File Upload) ---
 const StudentCourseView = ({ course, user, onBack, onSubmitAssignment, onToggleComplete, onUpdateDiscussions, flashcardDecks = [] }) => {
   const [activeItem, setActiveItem] = useState(null);
   const [activeTab, setActiveTab] = useState('materi');
@@ -1549,6 +1640,7 @@ const StudentCourseView = ({ course, user, onBack, onSubmitAssignment, onToggleC
   const [isTakingQuiz, setIsTakingQuiz] = useState(false);
   const [showCertificate, setShowCertificate] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
+  const [isUploading, setIsUploading] = useState(false); // New Loading State
 
   // Flashcard Player State
   const [playingDeck, setPlayingDeck] = useState(null);
@@ -1559,15 +1651,42 @@ const StudentCourseView = ({ course, user, onBack, onSubmitAssignment, onToggleC
   const safeSubmissions = course.submissions || [];
   const mySubmission = safeSubmissions.find(s => s.assignmentId === activeItem?.id && s.studentId === user.uid);
   
-  // Filter Decks for this Course
   const courseDecks = flashcardDecks.filter(d => d.courseId === course.id);
 
   const handleSaveNote = (e) => { setNote(e.target.value); localStorage.setItem(`note-${course.id}`, e.target.value); };
   const getYoutubeEmbedUrl = (url) => { if (!url) return ''; const match = url.match(/^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/); return (match && match[2].length === 11) ? `https://www.youtube.com/embed/${match[2]}` : url; };
-  const handleTurnIn = () => { if(!file) return; const fakeUrl = URL.createObjectURL(file); onSubmitAssignment(course.id, activeItem.id, fakeUrl, file.name); setSubmitted(true); setFile(null); };
+  
+  // --- HELPER: Convert File to Persistent Text (Base64) ---
+  const fileToBase64 = (file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = (error) => reject(error);
+    });
+  };
+
+  // --- UPDATED TURN IN FUNCTION ---
+  const handleTurnIn = async () => { 
+      if(!file) return; 
+      setIsUploading(true);
+      try {
+          // Convert file to text string before saving
+          const base64File = await fileToBase64(file);
+          onSubmitAssignment(course.id, activeItem.id, base64File, file.name);
+          setSubmitted(true); 
+          setFile(null); 
+      } catch (error) {
+          alert("Gagal mengupload file. Coba lagi.");
+          console.error(error);
+      } finally {
+          setIsUploading(false);
+      }
+  };
+
   const handleSendDiscussion = (text) => { const newMsg = { id: Date.now(), user: "Saya", text, time: "Baru saja", role: "student" }; onUpdateDiscussions(course.id, [...(course.discussions || []), newMsg]); };
 
-  // Flashcard Navigation Helpers
+  // Flashcard Helpers
   const nextCard = () => { if(fcIndex < playingDeck.cards.length - 1) { setFcFlipped(false); setTimeout(() => setFcIndex(i => i+1), 150); }};
   const prevCard = () => { if(fcIndex > 0) { setFcFlipped(false); setTimeout(() => setFcIndex(i => i-1), 150); }};
 
@@ -1576,30 +1695,19 @@ const StudentCourseView = ({ course, user, onBack, onSubmitAssignment, onToggleC
   }
 
   const renderContent = () => {
-    // 1. Flashcard Player Mode
+    // Flashcard Player
     if (playingDeck) {
         const card = playingDeck.cards[fcIndex];
         return (
             <div className="h-full flex flex-col items-center justify-center p-10 bg-slate-800 rounded-3xl text-white relative">
                 <button onClick={() => setPlayingDeck(null)} className="absolute top-6 left-6 flex items-center gap-2 text-slate-400 hover:text-white"><ChevronLeft/> Keluar</button>
                 <h3 className="text-xl font-bold mb-8 text-teal-400">{playingDeck.title}</h3>
-                
                 <div className="w-full max-w-lg h-64 perspective-1000 cursor-pointer" onClick={() => setFcFlipped(!fcFlipped)}>
-                    <motion.div 
-                        initial={false} animate={{ rotateY: fcFlipped ? 180 : 0 }} transition={{ duration: 0.6, type: "spring" }} style={{ transformStyle: "preserve-3d" }} className="w-full h-full relative"
-                    >
-                        {/* Front */}
-                        <div className="absolute inset-0 bg-white rounded-2xl flex items-center justify-center p-6 text-slate-800 backface-hidden" style={{ backfaceVisibility: "hidden" }}>
-                            <h2 className="text-3xl font-bold text-center">{card.q}</h2>
-                            <p className="absolute bottom-4 text-xs text-slate-400 uppercase tracking-widest">Klik untuk balik</p>
-                        </div>
-                        {/* Back */}
-                        <div className="absolute inset-0 bg-teal-600 rounded-2xl flex items-center justify-center p-6 text-white backface-hidden" style={{ backfaceVisibility: "hidden", transform: "rotateY(180deg)" }}>
-                            <h2 className="text-2xl font-bold text-center">{card.a}</h2>
-                        </div>
+                    <motion.div initial={false} animate={{ rotateY: fcFlipped ? 180 : 0 }} transition={{ duration: 0.6, type: "spring" }} style={{ transformStyle: "preserve-3d" }} className="w-full h-full relative">
+                        <div className="absolute inset-0 bg-white rounded-2xl flex items-center justify-center p-6 text-slate-800 backface-hidden" style={{ backfaceVisibility: "hidden" }}><h2 className="text-3xl font-bold text-center">{card.q}</h2><p className="absolute bottom-4 text-xs text-slate-400 uppercase tracking-widest">Klik untuk balik</p></div>
+                        <div className="absolute inset-0 bg-teal-600 rounded-2xl flex items-center justify-center p-6 text-white backface-hidden" style={{ backfaceVisibility: "hidden", transform: "rotateY(180deg)" }}><h2 className="text-2xl font-bold text-center">{card.a}</h2></div>
                     </motion.div>
                 </div>
-
                 <div className="flex items-center gap-8 mt-8">
                     <button onClick={prevCard} disabled={fcIndex===0} className="p-3 bg-white/10 rounded-full hover:bg-white/20 disabled:opacity-30"><ChevronLeft size={24}/></button>
                     <span className="font-mono">{fcIndex + 1} / {playingDeck.cards.length}</span>
@@ -1609,10 +1717,40 @@ const StudentCourseView = ({ course, user, onBack, onSubmitAssignment, onToggleC
         );
     }
 
-    // 2. Standard Content Modes
+    // Standard Content
     if (!activeItem) return (<div className="text-center p-8"><BookOpen size={64} className="text-slate-700 mx-auto mb-4 opacity-50" /><h3 className="text-2xl font-bold text-white mb-2">Selamat Datang</h3><p className="text-slate-400">Pilih materi di sebelah kanan.</p>{course.announcement && (<div className="mt-8 bg-yellow-50 border-l-4 border-yellow-400 p-4 text-left rounded-r-lg max-w-md mx-auto"><div className="flex gap-2 items-center mb-1 text-yellow-700 font-bold"><Megaphone size={16} /> PENGUMUMAN PENTING</div><p className="text-slate-700 text-sm">{course.announcement}</p></div>)}</div>);
+    
     if (activeItem.type === 'quiz') { return (<div className="text-center p-12 bg-white rounded-3xl shadow-xl max-w-md mx-auto"><HelpCircle size={64} className="mx-auto text-teal-600 mb-4" /><h3 className="text-2xl font-bold text-slate-800 mb-2">{activeItem.title}</h3><p className="text-slate-500 mb-6">Uji pemahamanmu dengan kuis ini.</p><button onClick={() => setIsTakingQuiz(true)} className="px-8 py-3 bg-teal-600 text-white rounded-xl font-bold hover:bg-teal-700 transition-all">Mulai Kuis</button></div>); }
-    if (activeItem.type === 'assignment') { return (<div className="text-center bg-white p-8 rounded-2xl w-96 shadow-2xl overflow-y-auto max-h-full"><div className="w-16 h-16 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto mb-4"><CheckSquare size={32} /></div><h3 className="text-xl font-bold text-slate-800 mb-1">{activeItem.title}</h3><p className="text-slate-500 text-sm mb-6">Deadline: {activeItem.deadline}</p>{activeItem.attachment && (<div className="bg-slate-50 border border-slate-200 rounded-xl p-3 mb-6 text-left flex items-center gap-3"><div className="bg-white p-2 rounded-lg border border-slate-200 text-blue-600">{activeItem.attachment.type === 'link' ? <LinkIcon size={16} /> : <FileText size={16} />}</div><div className="flex-1 overflow-hidden"><p className="text-xs text-slate-500 font-bold uppercase">Lampiran</p><a href={activeItem.attachment.url} target="_blank" rel="noreferrer" className="text-sm font-bold text-slate-800 truncate hover:text-blue-600 hover:underline block">{activeItem.attachment.title || "Lihat Lampiran"}</a></div></div>)}{(mySubmission || submitted) ? (<div className="bg-green-50 text-green-700 p-4 rounded-xl font-bold border border-green-200 flex items-center justify-center gap-2"><CheckCircle size={20} /> Sudah Dikumpulkan</div>) : (<div className="space-y-4"><div className="border-2 border-dashed border-slate-300 p-6 rounded-xl cursor-pointer hover:bg-slate-50 transition-all relative"><input type="file" onChange={(e) => setFile(e.target.files[0])} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" /><Upload size={24} className="mx-auto text-slate-400 mb-2" /><p className="text-sm font-bold text-slate-600">{file ? file.name : "Klik untuk Upload"}</p></div><button onClick={handleTurnIn} disabled={!file} className="w-full py-2 bg-teal-700 text-white rounded-lg font-bold disabled:opacity-50">Serahkan Tugas</button></div>)}</div>); }
+    
+    if (activeItem.type === 'assignment') { 
+        return (
+            <div className="text-center bg-white p-8 rounded-2xl w-96 shadow-2xl overflow-y-auto max-h-full">
+                <div className="w-16 h-16 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto mb-4"><CheckSquare size={32} /></div>
+                <h3 className="text-xl font-bold text-slate-800 mb-1">{activeItem.title}</h3>
+                <p className="text-slate-500 text-sm mb-6">Deadline: {activeItem.deadline}</p>
+                {activeItem.attachment && (<div className="bg-slate-50 border border-slate-200 rounded-xl p-3 mb-6 text-left flex items-center gap-3"><div className="bg-white p-2 rounded-lg border border-slate-200 text-blue-600">{activeItem.attachment.type === 'link' ? <LinkIcon size={16} /> : <FileText size={16} />}</div><div className="flex-1 overflow-hidden"><p className="text-xs text-slate-500 font-bold uppercase">Lampiran</p><a href={activeItem.attachment.url} target="_blank" rel="noreferrer" className="text-sm font-bold text-slate-800 truncate hover:text-blue-600 hover:underline block">{activeItem.attachment.title || "Lihat Lampiran"}</a></div></div>)}
+                
+                {(mySubmission || submitted) ? (
+                    <div className="bg-green-50 text-green-700 p-4 rounded-xl font-bold border border-green-200 flex flex-col items-center justify-center gap-2">
+                        <div className="flex items-center gap-2"><CheckCircle size={20} /> Sudah Dikumpulkan</div>
+                        {mySubmission && <a href={mySubmission.fileUrl} download={mySubmission.fileName} className="text-xs underline hover:text-green-900">Lihat File Saya</a>}
+                    </div>
+                ) : (
+                    <div className="space-y-4">
+                        <div className="border-2 border-dashed border-slate-300 p-6 rounded-xl cursor-pointer hover:bg-slate-50 transition-all relative">
+                            <input type="file" onChange={(e) => setFile(e.target.files[0])} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" />
+                            <Upload size={24} className="mx-auto text-slate-400 mb-2" />
+                            <p className="text-sm font-bold text-slate-600">{file ? file.name : "Klik untuk Upload"}</p>
+                        </div>
+                        <button onClick={handleTurnIn} disabled={!file || isUploading} className="w-full py-2 bg-teal-700 text-white rounded-lg font-bold disabled:opacity-50 flex justify-center items-center gap-2">
+                            {isUploading ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : "Serahkan Tugas"}
+                        </button>
+                    </div>
+                )}
+            </div>
+        ); 
+    }
+
     if (activeItem.type === 'video') { if (activeItem.isYoutube) return <iframe src={getYoutubeEmbedUrl(activeItem.url)} className="w-full h-full" title="YouTube" frameBorder="0" allowFullScreen></iframe>; return <video controls src={activeItem.url} className="max-h-[60vh] max-w-full rounded-lg shadow-lg bg-black" />; }
     if (activeItem.type === 'image') { return <img src={activeItem.url} alt="Materi" className="max-h-[70vh] max-w-full rounded-lg shadow-lg object-contain" />; }
     return (<div className="w-full h-full flex flex-col items-center justify-center bg-slate-800 text-white p-4"><div className="text-center"><FileText size={80} className="text-slate-500 mx-auto mb-6" /><h3 className="text-xl font-bold mb-2">{activeItem.title}</h3><a href={activeItem.url} download={activeItem.title} className="px-8 py-3 bg-teal-600 hover:bg-teal-500 text-white rounded-xl font-bold shadow-lg inline-flex items-center gap-2 transition-all"><Upload className="rotate-180" size={20} /> Download File</a></div></div>);
@@ -1624,34 +1762,9 @@ const StudentCourseView = ({ course, user, onBack, onSubmitAssignment, onToggleC
 
   return (
     <div className={`max-w-6xl mx-auto h-[calc(100vh-8rem)] flex flex-col lg:flex-row gap-6 transition-all ${focusMode ? 'fixed inset-0 z-50 bg-white p-8 max-w-none h-screen' : ''}`}>
-      {/* LEFT CONTENT AREA */}
-      <div className="flex-1 flex flex-col">
-          <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-4">
-                  {!focusMode && <button onClick={onBack} className="p-2 bg-white rounded-lg text-slate-400 hover:text-teal-700"><ChevronRight className="rotate-180" /></button>}
-                  <h2 className="text-xl font-bold text-slate-800 truncate max-w-xs">{activeItem ? activeItem.title : course.title}</h2>
-              </div>
-              <div className="flex items-center gap-2">
-                  {course.meetingLink && (<a href={course.meetingLink} target="_blank" rel="noreferrer" className="flex items-center gap-2 bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-full font-bold text-sm shadow-lg shadow-red-500/30 animate-pulse"><Video size={16} /> Live</a>)}
-                  <button onClick={() => setFocusMode(!focusMode)} className="p-2 bg-slate-100 hover:bg-teal-100 text-slate-600 hover:text-teal-700 rounded-lg" title="Mode Fokus">{focusMode ? <Minimize size={20} /> : <Maximize size={20} />}</button>
-              </div>
-          </div>
-          <div className="flex-1 bg-slate-900 rounded-3xl overflow-hidden relative shadow-xl border border-slate-800 flex items-center justify-center">
-             {activeTab === 'diskusi' ? (<div className="w-full h-full bg-white overflow-hidden rounded-3xl"><div className="p-4 border-b bg-slate-50 font-bold text-slate-700">Forum Diskusi Kelas</div><div className="h-full pb-16"><DiscussionBoard discussions={course.discussions || []} onSend={handleSendDiscussion} /></div></div>) : 
-              activeTab === 'notes' ? (<div className="w-full h-full bg-yellow-50 overflow-hidden rounded-3xl p-6 flex flex-col"><h3 className="font-bold text-yellow-800 mb-2 flex items-center gap-2"><PenTool size={18} /> Catatan Pribadi</h3><textarea value={note} onChange={handleSaveNote} className="flex-1 bg-transparent border-none outline-none text-slate-700 resize-none leading-relaxed font-medium" placeholder="Tulis catatan penting di sini..." /><p className="text-[10px] text-yellow-600 mt-2 text-right">*Disimpan otomatis</p></div>) : 
-              renderContent()}
-          </div>
-      </div>
-
-      {/* RIGHT SIDEBAR (Navigation & Flashcards) */}
+      <div className="flex-1 flex flex-col"><div className="flex items-center justify-between mb-4"><div className="flex items-center gap-4">{!focusMode && <button onClick={onBack} className="p-2 bg-white rounded-lg text-slate-400 hover:text-teal-700"><ChevronRight className="rotate-180" /></button>}<h2 className="text-xl font-bold text-slate-800 truncate max-w-xs">{activeItem ? activeItem.title : course.title}</h2></div><div className="flex items-center gap-2">{course.meetingLink && (<a href={course.meetingLink} target="_blank" rel="noreferrer" className="flex items-center gap-2 bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-full font-bold text-sm shadow-lg shadow-red-500/30 animate-pulse"><Video size={16} /> Live</a>)}<button onClick={() => setFocusMode(!focusMode)} className="p-2 bg-slate-100 hover:bg-teal-100 text-slate-600 hover:text-teal-700 rounded-lg" title="Mode Fokus">{focusMode ? <Minimize size={20} /> : <Maximize size={20} />}</button></div></div><div className="flex-1 bg-slate-900 rounded-3xl overflow-hidden relative shadow-xl border border-slate-800 flex items-center justify-center">{activeTab === 'diskusi' ? (<div className="w-full h-full bg-white overflow-hidden rounded-3xl"><div className="p-4 border-b bg-slate-50 font-bold text-slate-700">Forum Diskusi Kelas</div><div className="h-full pb-16"><DiscussionBoard discussions={course.discussions || []} onSend={handleSendDiscussion} /></div></div>) : activeTab === 'notes' ? (<div className="w-full h-full bg-yellow-50 overflow-hidden rounded-3xl p-6 flex flex-col"><h3 className="font-bold text-yellow-800 mb-2 flex items-center gap-2"><PenTool size={18} /> Catatan Pribadi</h3><textarea value={note} onChange={handleSaveNote} className="flex-1 bg-transparent border-none outline-none text-slate-700 resize-none leading-relaxed font-medium" placeholder="Tulis catatan penting di sini..." /><p className="text-[10px] text-yellow-600 mt-2 text-right">*Disimpan otomatis</p></div>) : renderContent()}</div></div>
       <div className={`w-full lg:w-96 bg-white border border-slate-200 rounded-3xl flex flex-col overflow-hidden shadow-sm ${focusMode ? 'hidden' : ''}`}>
-        <div className="flex border-b border-slate-200">
-            <button onClick={() => {setActiveTab('materi'); setActiveItem(null); setIsTakingQuiz(false); setPlayingDeck(null);}} className={`flex-1 py-4 font-bold text-sm ${activeTab === 'materi' ? 'text-teal-700 border-b-2 border-teal-700' : 'text-slate-500'}`}>Materi</button>
-            <button onClick={() => setActiveTab('flashcards')} className={`flex-1 py-4 font-bold text-sm ${activeTab === 'flashcards' ? 'text-teal-700 border-b-2 border-teal-700' : 'text-slate-500'}`}>Kartu</button>
-            <button onClick={() => setActiveTab('diskusi')} className={`flex-1 py-4 font-bold text-sm ${activeTab === 'diskusi' ? 'text-teal-700 border-b-2 border-teal-700' : 'text-slate-500'}`}>Diskusi</button>
-            <button onClick={() => setActiveTab('notes')} className={`flex-1 py-4 font-bold text-sm ${activeTab === 'notes' ? 'text-teal-700 border-b-2 border-teal-700' : 'text-slate-500'}`}>Catatan</button>
-        </div>
-        
+        <div className="flex border-b border-slate-200"><button onClick={() => {setActiveTab('materi'); setActiveItem(null); setIsTakingQuiz(false);}} className={`flex-1 py-4 font-bold text-sm ${activeTab === 'materi' ? 'text-teal-700 border-b-2 border-teal-700' : 'text-slate-500'}`}>Materi</button><button onClick={() => setActiveTab('diskusi')} className={`flex-1 py-4 font-bold text-sm ${activeTab === 'diskusi' ? 'text-teal-700 border-b-2 border-teal-700' : 'text-slate-500'}`}>Diskusi</button><button onClick={() => setActiveTab('notes')} className={`flex-1 py-4 font-bold text-sm ${activeTab === 'notes' ? 'text-teal-700 border-b-2 border-teal-700' : 'text-slate-500'}`}>Catatan</button></div>
         {activeTab === 'materi' && (
            <div className="flex-1 overflow-y-auto">
               <div className="px-6 pt-6 pb-2"><div className="flex justify-between text-xs font-bold text-slate-500 mb-1"><span>Progress</span><span>{progress}%</span></div><div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden"><div className="bg-teal-500 h-full rounded-full transition-all duration-500" style={{width: `${progress}%`}}></div></div>{progress === 100 && (<button onClick={() => setShowCertificate(true)} className="mt-4 w-full py-3 bg-gradient-to-r from-yellow-400 to-orange-500 text-white font-bold rounded-xl shadow-lg flex items-center justify-center gap-2 animate-bounce"><Award size={20} /> Klaim Sertifikat</button>)}</div>
@@ -1659,7 +1772,7 @@ const StudentCourseView = ({ course, user, onBack, onSubmitAssignment, onToggleC
            </div>
         )}
 
-        {/* NEW: FLASHCARD TAB CONTENT */}
+        {/* FLASHCARD TAB */}
         {activeTab === 'flashcards' && (
             <div className="flex-1 p-6 overflow-y-auto">
                 <h3 className="font-bold text-slate-800 mb-4">Kartu Pintar Kelas Ini</h3>
@@ -1672,13 +1785,8 @@ const StudentCourseView = ({ course, user, onBack, onSubmitAssignment, onToggleC
                     <div className="space-y-4">
                         {courseDecks.map(deck => (
                             <div key={deck.id} onClick={() => { setPlayingDeck(deck); setFcIndex(0); setFcFlipped(false); setActiveItem(null); }} className="p-4 border border-slate-200 rounded-xl cursor-pointer hover:bg-teal-50 hover:border-teal-200 transition-all flex items-center gap-4 group">
-                                <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${deck.color} group-hover:scale-110 transition-transform`}>
-                                    <Layers size={20}/>
-                                </div>
-                                <div>
-                                    <h4 className="font-bold text-slate-700 group-hover:text-teal-700">{deck.title}</h4>
-                                    <p className="text-xs text-slate-500">{deck.cards.length} Kartu</p>
-                                </div>
+                                <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${deck.color} group-hover:scale-110 transition-transform`}><Layers size={20}/></div>
+                                <div><h4 className="font-bold text-slate-700 group-hover:text-teal-700">{deck.title}</h4><p className="text-xs text-slate-500">{deck.cards.length} Kartu</p></div>
                                 <Play size={16} className="ml-auto text-slate-300 group-hover:text-teal-600"/>
                             </div>
                         ))}
@@ -1884,7 +1992,7 @@ const EduFlowAppContent = () => {
              )}
              {activeView === 'profile' && <motion.div key="profile" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><StudentProfileView user={user} /></motion.div>}
              {activeView === 'whiteboard' && <motion.div key="wb" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><WhiteboardView /></motion.div>}
-             {activeView === 'kanban' && <motion.div key="kanban" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><KanbanBoard /></motion.div>}
+             {activeView === 'kanban' && <motion.div key="kanban" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><KanbanBoard user={user} /></motion.div>}
              {activeView === 'flashcards' && (
    <motion.div key="flash" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
        <FlashcardView 
