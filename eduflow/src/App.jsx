@@ -16,6 +16,9 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 import { motion, AnimatePresence } from 'framer-motion';
 
 
+// --- PASTE THIS AT THE TOP OF YOUR FILE ---
+
+// 1. Convert File to Text (Base64)
 const fileToBase64 = (file) => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -23,6 +26,28 @@ const fileToBase64 = (file) => {
     reader.onload = () => resolve(reader.result);
     reader.onerror = (error) => reject(error);
   });
+};
+
+// 2. Save to Local Browser Storage (Bypasses Database Limits)
+const saveFileLocally = (base64String) => {
+    try {
+        const uniqueKey = `file_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        localStorage.setItem(uniqueKey, base64String);
+        return `LOCAL:${uniqueKey}`; // We save this "Key" to the database instead of the file
+    } catch (e) {
+        alert("Gagal menyimpan file locally (Storage Penuh)");
+        return null;
+    }
+};
+
+// 3. Retrieve File (Decodes the Key)
+const getFileFromStorage = (url) => {
+    if (!url) return "#";
+    if (url.startsWith('LOCAL:')) {
+        const key = url.split('LOCAL:')[1];
+        return localStorage.getItem(key) || '#';
+    }
+    return url;
 };
 // ==========================================
 // 1. UTILITIES & DATA
@@ -1561,58 +1586,49 @@ const TeacherCourseManager = ({ course, onBack, onUpdateModules, onGradeSubmissi
   };
 
   // --- THE CRITICAL FIX IS HERE ---
-  const handleSaveItem = async () => {
-    if (!title) { alert("Mohon isi judul."); return; }
-    setUploading(true); 
-    
-    try {
-      let newItem = { id: Date.now(), title: title, completed: false };
+  // REPLACE YOUR OLD handleSave/handleSaveItem WITH THIS:
+  const handleSave = async () => { // Make sure it says 'async'
+      if(!title) return alert("Judul wajib diisi");
+      setUploading(true);
       
-      if (addType === 'link') { 
-          newItem.type = 'video'; 
-          newItem.url = linkUrl; 
-          newItem.isYoutube = linkUrl.includes('youtube') || linkUrl.includes('youtu.be'); 
-      } 
-      else if (addType === 'assignment') {
-        newItem.type = 'assignment'; 
-        newItem.deadline = deadline || 'Minggu Depan';
-        
-        // Fix Assignment Attachment Persistence
-        if (assignAttachType === 'file' && assignFile) {
-             const base64Attach = await fileToBase64(assignFile);
-             newItem.attachment = { type: 'file', title: assignFile.name, url: base64Attach }; 
-        }
-        else if (assignAttachType === 'link' && assignLink) {
-             newItem.attachment = { type: 'link', title: "Link", url: assignLink };
-        }
-      }
-      else if (addType === 'quiz') { 
-          newItem.type = 'quiz'; 
-          newItem.questions = quizQuestions; 
-      }
-      else { 
-          // FILE UPLOAD FIX
-          newItem.type = file?.type.includes('video') ? 'video' : 'file';
+      try {
+          let newItem = { id: Date.now(), title, type: 'file', completed: false };
+          
           if (file) {
-              const base64 = await fileToBase64(file); // Convert to text string
-              newItem.url = base64; // Save text string, NOT blob URL
+              // 1. Convert file to text
+              const base64 = await fileToBase64(file);
+              
+              // 2. Check size. If > 1MB, save to LocalStorage. If small, save to DB.
+              if(base64.length > 1000000) {
+                 const localRef = saveFileLocally(base64);
+                 if(localRef) newItem.url = localRef;
+                 else throw new Error("Storage Penuh");
+              } else {
+                 newItem.url = base64;
+              }
               newItem.fileName = file.name;
           }
-      }
+          
+          // Save to Course State
+          const updatedModules = [...(course.modules||[])];
+          if(!updatedModules.length) updatedModules.push({title: "Materi Baru", items:[]});
+          
+          // Add to the first module (or whichever logic you have)
+          updatedModules[0].items.push(newItem);
+          
+          // Update Firebase
+          await onUpdateModules(course.id, updatedModules);
+          
+          // Reset Form
+          setFile(null); setTitle(""); setShowAdd(false);
+          alert("Berhasil diupload!");
 
-      const updatedModules = safeModules.map((mod, idx) => idx === targetModuleIdx ? { ...mod, items: [...mod.items, newItem] } : mod);
-      
-      // Save to Firebase
-      await onUpdateModules(course.id, updatedModules);
-      
-      setShowAddMaterial(false); setTitle(""); setFile(null); setLinkUrl(""); setDeadline(""); setAssignAttachType('none'); setAssignFile(null); setAssignLink(""); setQuizQuestions([]);
-      alert("Item berhasil disimpan!");
-    } catch (error) { 
-        console.error(error); 
-        alert("Gagal menyimpan. File mungkin terlalu besar (Max 1MB untuk database ini)."); 
-    } finally { 
-        setUploading(false); 
-    }
+      } catch (e) { 
+          console.error(e); 
+          alert("Gagal upload: " + e.message); 
+      } finally { 
+          setUploading(false); 
+      }
   };
 
   return (
@@ -1690,20 +1706,34 @@ const StudentCourseView = ({ course, user, onBack, onSubmitAssignment, onToggleC
   };
 
   // --- UPDATED TURN IN FUNCTION ---
-  const handleTurnIn = async () => { 
-      if(!file) return; 
-      setIsUploading(true);
+  // REPLACE YOUR OLD handleTurnIn WITH THIS:
+  const handleTurnIn = async () => {
+      if(!file) return;
+      setUploading(true);
+      
       try {
-          // Convert file to text string before saving
-          const base64File = await fileToBase64(file);
-          onSubmitAssignment(course.id, activeItem.id, base64File, file.name);
-          setSubmitted(true); 
-          setFile(null); 
-      } catch (error) {
-          alert("Gagal mengupload file. Coba lagi.");
-          console.error(error);
-      } finally {
-          setIsUploading(false);
+          // 1. Convert
+          const base64 = await fileToBase64(file);
+          
+          // 2. Determine Storage Method
+          let finalUrl = base64;
+          if(base64.length > 1000000) {
+             const localRef = saveFileLocally(base64);
+             if(localRef) finalUrl = localRef;
+             else throw new Error("Storage Penuh");
+          }
+          
+          // 3. Save to Firebase
+          await onSubmitAssignment(course.id, activeItem.id, finalUrl, file.name);
+          
+          setFile(null);
+          alert("Tugas Terkirim!");
+
+      } catch(e) { 
+          console.error(e); 
+          alert("Gagal upload."); 
+      } finally { 
+          setUploading(false); 
       }
   };
 
@@ -1756,7 +1786,7 @@ const StudentCourseView = ({ course, user, onBack, onSubmitAssignment, onToggleC
                 {(mySubmission || submitted) ? (
                     <div className="bg-green-50 text-green-700 p-4 rounded-xl font-bold border border-green-200 flex flex-col items-center justify-center gap-2">
                         <div className="flex items-center gap-2"><CheckCircle size={20} /> Sudah Dikumpulkan</div>
-                        {mySubmission && <a href={mySubmission.fileUrl} download={mySubmission.fileName} className="text-xs underline hover:text-green-900">Lihat File Saya</a>}
+                        {mySubmission && <a href={getFileFromStorage(mySubmission.fileUrl)} download={mySubmission.fileName} className="text-xs underline hover:text-green-900">Lihat File Saya</a>}
                     </div>
                 ) : (
                     <div className="space-y-4">
