@@ -327,7 +327,7 @@ const Sidebar = ({ activeView, setActiveView, isMobileOpen, setIsMobileOpen, use
 
 const AuthPage = ({ onLogin }) => {
   const [isRegistering, setIsRegistering] = useState(false); 
-  const [loading, setLoading] = useState(false); // Added loading state for button
+  const [loading, setLoading] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
@@ -335,35 +335,48 @@ const AuthPage = ({ onLogin }) => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setLoading(true); // Start loading
+    setLoading(true);
+    
     try {
+      let userObj;
+      
       if (isRegistering) {
-        // Register Logic
+        // 1. Register
         const uc = await createUserWithEmailAndPassword(auth, email, password);
-        const userData = { name, email, role, createdAt: new Date() };
-        await setDoc(doc(db, "users", uc.user.uid), userData);
-        onLogin({ uid: uc.user.uid, ...userData });
+        userObj = uc.user;
+        // Try to save to DB, but don't wait forever
+        setDoc(doc(db, "users", userObj.uid), { name, email, role, createdAt: new Date() }).catch(() => {});
       } else {
-        // Login Logic
+        // 2. Login
         const uc = await signInWithEmailAndPassword(auth, email, password);
-        const docRef = doc(db, "users", uc.user.uid);
-        const docSnap = await getDoc(docRef);
-        
-        if (docSnap.exists()) {
-            onLogin({ uid: uc.user.uid, ...docSnap.data() });
-        } else {
-            // FALLBACK: If user is in Auth but missing in Database, create default profile
-            // This fixes the "Nothing happens" bug
-            const fallbackData = { name: "User", email: email, role: "student", createdAt: new Date() };
-            await setDoc(docRef, fallbackData);
-            onLogin({ uid: uc.user.uid, ...fallbackData });
-        }
+        userObj = uc.user;
       }
+
+      // 3. THE FIX: Timeout Logic
+      // Try to get user data, but give up after 2 seconds
+      const dbTask = getDoc(doc(db, "users", userObj.uid));
+      const timeoutTask = new Promise((resolve) => setTimeout(() => resolve("TIMEOUT"), 2000));
+
+      const result = await Promise.race([dbTask, timeoutTask]);
+
+      if (result !== "TIMEOUT" && result.exists()) {
+          // Online & Found Data
+          onLogin({ uid: userObj.uid, ...result.data() });
+      } else {
+          // Offline or Slow -> Use Fallback Data
+          console.warn("Database slow/offline. Logging in with fallback.");
+          onLogin({ 
+              uid: userObj.uid, 
+              email: userObj.email, 
+              name: name || "User (Offline)", 
+              role: role // Default to selected role or student
+          });
+      }
+
     } catch (err) { 
-        console.error(err); 
-        alert("Error: " + err.message); 
+        alert("Gagal: " + err.message); 
     } finally {
-        setLoading(false); // Stop loading
+        setLoading(false);
     }
   };
 
@@ -1782,7 +1795,7 @@ const StudentCourseView = ({ course, user, onBack, onSubmitAssignment, flashcard
 
 const EduFlowAppContent = () => {
   const [user, setUser] = useState(null); 
-  const [loadingAuth, setLoadingAuth] = useState(true); // NEW: Loading State
+  const [loadingAuth, setLoadingAuth] = useState(true);
   const [activeView, setActiveView] = useState('dashboard');
   const [isMobileOpen, setIsMobileOpen] = useState(false);
   const [courses, setCourses] = useState([]); 
@@ -1794,38 +1807,41 @@ const EduFlowAppContent = () => {
   const [personalEvents, setPersonalEvents] = useState([]);
   const [flashcardDecks, setFlashcardDecks] = useState(INITIAL_FLASHCARD_DECKS);
 
-  // --- AUTH CHECKER ---
+  // --- ROBUST AUTH CHECKER ---
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       if (currentUser) {
-        const docRef = doc(db, "users", currentUser.uid);
+        // Check DB with 2s Timeout
+        const dbTask = getDoc(doc(db, "users", currentUser.uid));
+        const timeoutTask = new Promise((resolve) => setTimeout(() => resolve("TIMEOUT"), 2000));
+
         try {
-            const docSnap = await getDoc(docRef);
-            if (docSnap.exists()) {
-                setUser({ uid: currentUser.uid, ...docSnap.data() });
+            const result = await Promise.race([dbTask, timeoutTask]);
+            if (result !== "TIMEOUT" && result.exists()) {
+                setUser({ uid: currentUser.uid, ...result.data() });
             } else {
-                // Fallback if auth exists but DB data is missing
+                // Fallback if offline
                 setUser({ uid: currentUser.uid, email: currentUser.email, name: "User", role: "student" });
             }
-        } catch (e) { 
-            console.error("DB Error", e); 
-            setUser(null);
+        } catch (e) {
+            // Fallback if error
+            setUser({ uid: currentUser.uid, email: currentUser.email, name: "User", role: "student" });
         }
       } else { 
           setUser(null); 
       }
-      setLoadingAuth(false); // Stop loading once check is done
+      setLoadingAuth(false);
     });
     return () => unsubscribe();
   }, []);
 
-  // --- COURSE LISTENER ---
+  // --- DATA LISTENERS ---
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, "courses"), (snapshot) => {
       const coursesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       if(coursesData.length > 0) setCourses(coursesData);
       else setCourses(INITIAL_COURSES);
-    }, (error) => { console.error("Snapshot Error", error); });
+    }, (error) => { console.log("Offline mode: using default courses"); });
     return () => unsubscribe();
   }, []);
 
@@ -1839,21 +1855,21 @@ const EduFlowAppContent = () => {
     const updatedCourses = courses.map(c => c.id === courseId ? { ...c, ...newData } : c);
     setCourses(updatedCourses);
     if (selectedCourse?.id === courseId) setSelectedCourse({ ...selectedCourse, ...newData });
-    await updateDoc(doc(db, "courses", courseId), newData);
+    updateDoc(doc(db, "courses", courseId), newData).catch(e => console.warn("Offline update"));
   };
 
   const handleUpdateModules = async (courseId, newModules) => {
     const updatedCourses = courses.map(c => c.id === courseId ? { ...c, modules: newModules } : c);
     setCourses(updatedCourses);
     if (selectedCourse?.id === courseId) setSelectedCourse({ ...selectedCourse, modules: newModules });
-    await updateDoc(doc(db, "courses", courseId), { modules: newModules });
+    updateDoc(doc(db, "courses", courseId), { modules: newModules }).catch(e => console.warn("Offline update"));
   };
 
   const handleUpdateDiscussions = async (courseId, newDiscussions) => {
     const updatedCourses = courses.map(c => c.id === courseId ? { ...c, discussions: newDiscussions } : c);
     setCourses(updatedCourses);
     if (selectedCourse?.id === courseId) setSelectedCourse({ ...selectedCourse, discussions: newDiscussions });
-    await updateDoc(doc(db, "courses", courseId), { discussions: newDiscussions }); 
+    updateDoc(doc(db, "courses", courseId), { discussions: newDiscussions }).catch(e => console.warn("Offline update"));
   };
 
   const handleSubmitAssignment = async (courseId, assignmentId, fileUrl, fileName) => {
@@ -1886,7 +1902,7 @@ const EduFlowAppContent = () => {
   };
 
   const handleAddCourse = async (newCourse) => {
-    await addDoc(collection(db, "courses"), { ...newCourse, modules: [], submissions: [], discussions: [], createdAt: new Date(), students: [] });
+    addDoc(collection(db, "courses"), { ...newCourse, modules: [], submissions: [], discussions: [], createdAt: new Date(), students: [] });
   };
 
   const handleJoinClass = async (code) => {
@@ -1905,10 +1921,7 @@ const EduFlowAppContent = () => {
     if (viewId === 'courses') setSelectedCourse(null);
   };
 
-  // RENDER
-  if (loadingAuth) {
-      return <div className="min-h-screen flex items-center justify-center text-slate-500 font-bold animate-pulse">Memuat data pengguna...</div>;
-  }
+  if (loadingAuth) return <div className="min-h-screen flex items-center justify-center text-slate-500 font-bold animate-pulse">Memuat...</div>;
 
   if (!user) return <AuthPage onLogin={setUser} />;
 
