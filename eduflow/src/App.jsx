@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 // Firebase Imports (Ensure you have firebase.js set up)
 import { auth, db } from './firebase'; 
 import { createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth';
-import { doc, setDoc, getDoc, collection, addDoc, onSnapshot, updateDoc, arrayUnion, deleteDoc, query, where, orderBy } from 'firebase/firestore';
+import { doc, setDoc, getDoc, collection, addDoc, onSnapshot, updateDoc, arrayUnion } from 'firebase/firestore';
 
 // UI Icons
 import { 
@@ -15,41 +15,6 @@ import {
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts';
 import { motion, AnimatePresence } from 'framer-motion';
 
-
-// --- PASTE THIS AT THE TOP OF YOUR FILE ---
-
-// 1. Convert File to Text (Base64)
-const fileToBase64 = (file) => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = (error) => reject(error);
-  });
-};
-
-// 2. Save to Local Browser Storage (Bypass DB Limits)
-const saveFileLocally = (base64String) => {
-    try {
-        const uniqueKey = `file_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-        localStorage.setItem(uniqueKey, base64String);
-        return `LOCAL:${uniqueKey}`;
-    } catch (e) {
-        console.error("Storage full", e);
-        alert("Gagal menyimpan file locally (Storage Penuh)");
-        return null;
-    }
-};
-
-// 3. Retrieve File (Decodes the Key)
-const getFileFromStorage = (url) => {
-    if (!url) return "#";
-    if (url.startsWith('LOCAL:')) {
-        const key = url.split('LOCAL:')[1];
-        return localStorage.getItem(key) || '#';
-    }
-    return url;
-};
 // ==========================================
 // 1. UTILITIES & DATA
 // ==========================================
@@ -327,7 +292,6 @@ const Sidebar = ({ activeView, setActiveView, isMobileOpen, setIsMobileOpen, use
 
 const AuthPage = ({ onLogin }) => {
   const [isRegistering, setIsRegistering] = useState(false); 
-  const [loading, setLoading] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
@@ -335,49 +299,20 @@ const AuthPage = ({ onLogin }) => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setLoading(true);
-    
     try {
-      let userObj;
-      
       if (isRegistering) {
-        // 1. Register
-        const uc = await createUserWithEmailAndPassword(auth, email, password);
-        userObj = uc.user;
-        // Try to save to DB, but don't wait forever
-        setDoc(doc(db, "users", userObj.uid), { name, email, role, createdAt: new Date() }).catch(() => {});
+        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        const user = userCredential.user;
+        await setDoc(doc(db, "users", user.uid), { name: name, email: email, role: role, createdAt: new Date() });
+        onLogin({ uid: user.uid, email, name, role });
       } else {
-        // 2. Login
-        const uc = await signInWithEmailAndPassword(auth, email, password);
-        userObj = uc.user;
+        const userCredential = await signInWithEmailAndPassword(auth, email, password);
+        const user = userCredential.user;
+        const docRef = doc(db, "users", user.uid);
+        const docSnap = await getDoc(docRef);
+        if (docSnap.exists()) onLogin({ uid: user.uid, ...docSnap.data() });
       }
-
-      // 3. THE FIX: Timeout Logic
-      // Try to get user data, but give up after 2 seconds
-      const dbTask = getDoc(doc(db, "users", userObj.uid));
-      const timeoutTask = new Promise((resolve) => setTimeout(() => resolve("TIMEOUT"), 2000));
-
-      const result = await Promise.race([dbTask, timeoutTask]);
-
-      if (result !== "TIMEOUT" && result.exists()) {
-          // Online & Found Data
-          onLogin({ uid: userObj.uid, ...result.data() });
-      } else {
-          // Offline or Slow -> Use Fallback Data
-          console.warn("Database slow/offline. Logging in with fallback.");
-          onLogin({ 
-              uid: userObj.uid, 
-              email: userObj.email, 
-              name: name || "User (Offline)", 
-              role: role // Default to selected role or student
-          });
-      }
-
-    } catch (err) { 
-        alert("Gagal: " + err.message); 
-    } finally {
-        setLoading(false);
-    }
+    } catch (err) { console.error(err); alert(err.message); }
   };
 
   return (
@@ -388,18 +323,12 @@ const AuthPage = ({ onLogin }) => {
               {isRegistering && (
                 <>
                   <input required type="text" value={name} onChange={e => setName(e.target.value)} className="w-full p-3 border rounded-xl" placeholder="Nama Lengkap" />
-                  <div className="grid grid-cols-2 gap-2">
-                      <button type="button" onClick={() => setRole('student')} className={`p-2 rounded border ${role === 'student' ? 'bg-teal-700 text-white' : ''}`}>Siswa</button>
-                      <button type="button" onClick={() => setRole('teacher')} className={`p-2 rounded border ${role === 'teacher' ? 'bg-teal-700 text-white' : ''}`}>Guru</button>
-                  </div>
+                  <div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setRole('student')} className={`p-2 rounded border ${role === 'student' ? 'bg-teal-700 text-white' : ''}`}>Siswa</button><button type="button" onClick={() => setRole('teacher')} className={`p-2 rounded border ${role === 'teacher' ? 'bg-teal-700 text-white' : ''}`}>Guru</button></div>
                 </>
               )}
               <input required type="email" value={email} onChange={e => setEmail(e.target.value)} className="w-full p-3 border rounded-xl" placeholder="Email" />
               <input required type="password" value={password} onChange={e => setPassword(e.target.value)} className="w-full p-3 border rounded-xl" placeholder="Password" />
-              
-              <button disabled={loading} type="submit" className="w-full bg-teal-700 text-white font-bold py-3 rounded-xl disabled:opacity-50">
-                  {loading ? "Memproses..." : (isRegistering ? "Daftar" : "Masuk")}
-              </button>
+              <button type="submit" className="w-full bg-teal-700 text-white font-bold py-3 rounded-xl">{isRegistering ? "Daftar" : "Masuk"}</button>
             </form>
             <button onClick={() => setIsRegistering(!isRegistering)} className="w-full text-center mt-4 text-sm text-teal-600 underline">{isRegistering ? "Sudah punya akun? Masuk" : "Belum punya akun? Daftar"}</button>
         </div>
@@ -450,70 +379,27 @@ const DashboardView = ({ user, courses, onJoin }) => {
 };
 
 // --- NEW: KANBAN BOARD COMPONENT ---
-// --- REAL-TIME KANBAN BOARD (CONNECTED TO FIREBASE) ---
-const KanbanBoard = ({ user }) => {
-  const [tasks, setTasks] = useState([]);
+const KanbanBoard = () => {
+  const [tasks, setTasks] = useState([
+    { id: 1, text: "Selesaikan Bab 1 Matematika", status: "todo", color: "bg-red-100 border-red-200" },
+    { id: 2, text: "Beli buku catatan baru", status: "doing", color: "bg-blue-100 border-blue-200" },
+    { id: 3, text: "Daftar ulang semester", status: "done", color: "bg-green-100 border-green-200" }
+  ]);
   const [newTask, setNewTask] = useState("");
-  const [loading, setLoading] = useState(true);
 
-  // 1. Fetch Tasks Real-time
-  useEffect(() => {
-    if (!user) return;
-    
-    // Query: Get tasks belonging to THIS user, ordered by time
-    const q = query(
-      collection(db, "tasks"), 
-      where("uid", "==", user.uid),
-      orderBy("createdAt", "desc")
-    );
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const tasksData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setTasks(tasksData);
-      setLoading(false);
-    }, (error) => {
-        console.error("Error fetching tasks:", error);
-        setLoading(false);
-    });
-
-    return () => unsubscribe();
-  }, [user]);
-
-  // 2. Add Task to Database
-  const addTask = async () => {
+  const addTask = () => {
     if (!newTask.trim()) return;
-    try {
-      await addDoc(collection(db, "tasks"), {
-        uid: user.uid,
-        text: newTask,
-        status: "todo",
-        color: "bg-white border-slate-200",
-        createdAt: new Date()
-      });
-      setNewTask("");
-    } catch (error) {
-      console.error("Error adding task:", error);
-    }
+    const task = { id: Date.now(), text: newTask, status: "todo", color: "bg-white border-slate-200" };
+    setTasks([...tasks, task]);
+    setNewTask("");
   };
 
-  // 3. Update Task Status in Database
-  const moveTask = async (id, newStatus) => {
-    try {
-      await updateDoc(doc(db, "tasks", id), { status: newStatus });
-    } catch (error) {
-      console.error("Error moving task:", error);
-    }
+  const moveTask = (id, newStatus) => {
+    setTasks(tasks.map(t => t.id === id ? { ...t, status: newStatus } : t));
   };
 
-  // 4. Delete Task from Database
-  const deleteTask = async (id) => {
-    if(window.confirm("Hapus tugas ini?")) {
-      try {
-        await deleteDoc(doc(db, "tasks", id));
-      } catch (error) {
-        console.error("Error deleting task:", error);
-      }
-    }
+  const deleteTask = (id) => {
+    setTasks(tasks.filter(t => t.id !== id));
   };
 
   const Column = ({ title, status, icon: Icon, color }) => (
@@ -521,14 +407,12 @@ const KanbanBoard = ({ user }) => {
       <div className={`flex items-center gap-2 mb-4 p-3 rounded-xl ${color} bg-opacity-20 text-slate-700 font-bold`}>
         <Icon size={20} /> {title} <span className="ml-auto bg-white px-2 py-0.5 rounded-md text-xs border shadow-sm">{tasks.filter(t => t.status === status).length}</span>
       </div>
-      <div className="flex-1 overflow-y-auto space-y-3 custom-scrollbar pr-2">
-        {loading && status === 'todo' && <p className="text-slate-400 text-xs text-center">Memuat...</p>}
-        
+      <div className="flex-1 overflow-y-auto space-y-3">
         {tasks.filter(t => t.status === status).map(task => (
-          <div key={task.id} className={`p-4 rounded-xl border-2 shadow-sm flex flex-col gap-3 bg-white ${task.color} hover:shadow-md transition-all group animate-in fade-in zoom-in duration-300`}>
+          <div key={task.id} className={`p-4 rounded-xl border-2 shadow-sm flex flex-col gap-3 bg-white ${task.color} hover:shadow-md transition-all group`}>
             <p className="text-sm font-medium text-slate-700">{task.text}</p>
             <div className="flex justify-between items-center pt-2 border-t border-slate-100/50">
-              <button onClick={() => deleteTask(task.id)} className="text-slate-300 hover:text-red-500 transition-colors"><Trash2 size={16}/></button>
+              <button onClick={() => deleteTask(task.id)} className="text-slate-300 hover:text-red-500"><Trash2 size={16}/></button>
               <div className="flex gap-1">
                 {status !== 'todo' && <button onClick={() => moveTask(task.id, status === 'done' ? 'doing' : 'todo')} className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-500"><ArrowLeft size={16}/></button>}
                 {status !== 'done' && <button onClick={() => moveTask(task.id, status === 'todo' ? 'doing' : 'done')} className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-500"><ArrowRight size={16}/></button>}
@@ -541,7 +425,7 @@ const KanbanBoard = ({ user }) => {
         <div className="mt-4 pt-4 border-t border-slate-200">
            <div className="flex gap-2">
               <input value={newTask} onChange={(e) => setNewTask(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && addTask()} placeholder="+ Tugas baru..." className="flex-1 bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm outline-none focus:border-teal-500" />
-              <button onClick={addTask} className="bg-teal-600 text-white p-2 rounded-xl hover:bg-teal-700 shadow-md"><Plus size={20}/></button>
+              <button onClick={addTask} className="bg-teal-600 text-white p-2 rounded-xl hover:bg-teal-700"><Plus size={20}/></button>
            </div>
         </div>
       )}
@@ -1565,238 +1449,256 @@ const SettingsView = ({ user, onUpdateUser }) => {
   );
 };
 
-const TeacherCourseManager = ({ course, onBack, onUpdateModules, onGradeSubmission, onUpdateCourse }) => {
-  const [title, setTitle] = useState(""); 
-  const [file, setFile] = useState(null); 
+const TeacherCourseManager = ({ course, onBack, onUpdateModules, onGradeSubmission, onUpdateDiscussions, onUpdateCourse }) => {
+  const [activeTab, setActiveTab] = useState('materi');
+  const [gradingScore, setGradingScore] = useState({});
+  const [showAddMaterial, setShowAddMaterial] = useState(false);
+  const [targetModuleIdx, setTargetModuleIdx] = useState(null);
+  const [addType, setAddType] = useState('file'); 
+  const [title, setTitle] = useState("");
+  const [file, setFile] = useState(null);
+  const [linkUrl, setLinkUrl] = useState("");
+  const [deadline, setDeadline] = useState("");
+  const [assignAttachType, setAssignAttachType] = useState('none');
+  const [assignFile, setAssignFile] = useState(null);
+  const [assignLink, setAssignLink] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [quizQuestions, setQuizQuestions] = useState([]);
+  const [attendance, setAttendance] = useState([{id: 1, name: "Rian Pratama", status: "H"},{id: 2, name: "Siti Aminah", status: "H"}]);
 
-  const handleSave = async () => {
-      if(!title) return;
-      setUploading(true);
-      try {
-          let newItem = { id: Date.now(), title, type: 'file', completed: false };
-          
-          if (file) {
-              // 1. Convert to Base64
-              const base64 = await fileToBase64(file);
-              
-              // 2. Check Size
-              if(base64.length > 1000000) {
-                 // Save to LocalStorage if > 1MB
-                 const localRef = saveFileLocally(base64);
-                 if(localRef) newItem.url = localRef;
-                 else throw new Error("Gagal simpan ke storage");
-              } else {
-                 // Save to DB if small
-                 newItem.url = base64;
-              }
-              newItem.fileName = file.name;
-          }
-          
-          const updatedModules = [...(course.modules||[])];
-          if(!updatedModules.length) updatedModules.push({title: "Materi", items:[]});
-          updatedModules[0].items.push(newItem);
-          
-          await onUpdateModules(course.id, updatedModules);
-          setFile(null); setTitle(""); setShowAdd(false);
-          alert("Materi berhasil diupload!");
-      } catch (e) { 
-          console.error(e); 
-          alert("Gagal upload."); 
-      } finally { 
-          setUploading(false); 
-      }
+  const safeModules = course.modules || [];
+  const submissions = course.submissions || [];
+
+  const handleGrade = (submission, score) => { onGradeSubmission(course.id, submission, score); alert("Nilai berhasil disimpan!"); };
+  const handleCreateModule = () => { const topicName = prompt("Masukkan nama Bab / Topik baru:"); if (topicName) onUpdateModules(course.id, [...safeModules, { title: topicName, items: [] }]); };
+  const handleDeleteItem = (moduleIndex, itemIndex) => { if (window.confirm("Hapus item ini?")) { const updatedModules = [...safeModules]; updatedModules[moduleIndex].items.splice(itemIndex, 1); onUpdateModules(course.id, updatedModules); } };
+  const handleFileChange = (e) => { if (e.target.files[0]) { setFile(e.target.files[0]); if (!title) setTitle(e.target.files[0].name); } };
+  const handleAssignFileChange = (e) => { if (e.target.files[0]) setAssignFile(e.target.files[0]); };
+  const handleSetMeeting = () => { const link = prompt("Masukkan Link Zoom/Meet:", course.meetingLink || ""); if (link !== null) onUpdateCourse(course.id, { meetingLink: link }); };
+  const handleSendDiscussion = (text) => { const newMsg = { id: Date.now(), user: "Pak Budi", text, time: "Baru saja", role: "teacher" }; onUpdateDiscussions(course.id, [...(course.discussions || []), newMsg]); };
+  const handleExportCSV = () => { if (submissions.length === 0) return; let csv = "Nama,File,Nilai\n"; submissions.forEach(s => csv += `${s.studentName},${s.fileName},${s.score||0}\n`); const link = document.createElement("a"); link.href = encodeURI("data:text/csv;charset=utf-8," + csv); link.download = "Nilai.csv"; link.click(); };
+
+  const handleAddQuestion = () => {
+      const q = document.getElementById('qText').value; const a = document.getElementById('optA').value; const b = document.getElementById('optB').value; const correct = document.getElementById('correctOpt').value;
+      if(q && a && b) { setQuizQuestions([...quizQuestions, { questionText: q, options: [ {answerText: a, isCorrect: correct==="0"}, {answerText: b, isCorrect: correct==="1"} ] }]); document.getElementById('qText').value = ""; document.getElementById('optA').value = ""; document.getElementById('optB').value = ""; } else alert("Isi semua field");
   };
 
-  const [showAdd, setShowAdd] = useState(false);
+  const handleSaveItem = async () => {
+    if (!title) { alert("Mohon isi judul."); return; }
+    setUploading(true); await new Promise(resolve => setTimeout(resolve, 500)); 
+    try {
+      let newItem = { id: Date.now(), title: title, completed: false };
+      if (addType === 'link') { newItem.type = 'video'; newItem.url = linkUrl; newItem.isYoutube = linkUrl.includes('youtube') || linkUrl.includes('youtu.be'); } 
+      else if (addType === 'assignment') {
+        newItem.type = 'assignment'; newItem.deadline = deadline || 'Minggu Depan';
+        if (assignAttachType === 'file' && assignFile) newItem.attachment = { type: 'file', title: assignFile.name, url: URL.createObjectURL(assignFile) }; 
+        else if (assignAttachType === 'link' && assignLink) newItem.attachment = { type: 'link', title: "Link", url: assignLink };
+      }
+      else if (addType === 'quiz') { newItem.type = 'quiz'; newItem.questions = quizQuestions; }
+      else { newItem.type = file?.type.includes('video') ? 'video' : 'file'; newItem.url = URL.createObjectURL(file); newItem.size = (file.size / 1024 / 1024).toFixed(2) + ' MB'; }
+      const updatedModules = safeModules.map((mod, idx) => idx === targetModuleIdx ? { ...mod, items: [...mod.items, newItem] } : mod);
+      onUpdateModules(course.id, updatedModules);
+      setShowAddMaterial(false); setTitle(""); setFile(null); setLinkUrl(""); setDeadline(""); setAssignAttachType('none'); setAssignFile(null); setAssignLink(""); setQuizQuestions([]);
+    } catch (error) { console.error(error); alert("Gagal menyimpan."); } finally { setUploading(false); }
+  };
 
   return (
-      <div className="space-y-6">
-          <div className="flex justify-between items-center bg-white p-4 rounded-xl shadow-sm">
-              <button onClick={onBack} className="p-2 hover:bg-slate-100 rounded-full"><ChevronLeft/></button>
-              <h2 className="text-xl font-bold">{course.title}</h2>
-              <button onClick={() => setShowAdd(true)} className="bg-teal-600 text-white px-4 py-2 rounded-lg flex gap-2"><Plus size={18}/> Upload</button>
-          </div>
-          
-          {/* Module List */}
-          <div className="space-y-4">
-              {course.modules?.map((m,i) => (
-                  <div key={i} className="bg-white border p-4 rounded-xl">
-                      <h3 className="font-bold text-slate-700 mb-2">{m.title}</h3>
-                      {m.items.map((it,j) => (
-                          <div key={j} className="flex justify-between items-center p-3 hover:bg-slate-50 rounded border-b last:border-0">
-                              <span className="text-sm">{it.title}</span>
-                              {it.url && (
-                                  <a 
-                                    href={getFileFromStorage(it.url)} 
-                                    download={it.fileName} 
-                                    className="text-blue-600 text-xs underline"
-                                  >
-                                    Download
-                                  </a>
-                              )}
-                          </div>
-                      ))}
-                  </div>
-              ))}
-          </div>
+    <div className="space-y-6">
+      <div className="flex items-center gap-4 bg-white p-4 rounded-xl border border-slate-200 shadow-sm"><button onClick={onBack} className="p-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-500 hover:text-teal-700"><ChevronRight className="rotate-180" /></button><div className="flex-1"><h2 className="text-2xl font-bold text-slate-800">{course.title}</h2><p className="text-sm text-slate-500">Kode: {course.code}</p></div><button onClick={handleSetMeeting} className={`flex items-center gap-2 px-4 py-2 rounded-lg font-bold text-sm transition-all ${course.meetingLink ? 'bg-red-50 text-red-600 border border-red-100' : 'bg-slate-100 text-slate-500'}`}><Video size={18} /> {course.meetingLink ? "Edit Link" : "Set Live"}</button></div>
+      <div className="flex border-b border-slate-200 bg-white px-6 rounded-t-2xl pt-2">{[{ id: 'materi', label: 'Materi', icon: BookOpen }, { id: 'diskusi', label: 'Forum', icon: MessageSquare }, { id: 'absensi', label: 'Absensi', icon: ClipboardList }, { id: 'nilai', label: 'Nilai', icon: Award }].map((tab) => (<button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`flex items-center gap-2 px-6 py-4 font-bold text-sm border-b-2 transition-all ${activeTab === tab.id ? 'border-teal-600 text-teal-700' : 'border-transparent text-slate-500 hover:text-teal-600'}`}><tab.icon size={18} /> {tab.label}</button>))}</div>
+      {activeTab === 'materi' && (
+        <div className="bg-white border border-slate-200 rounded-b-2xl p-6 shadow-sm rounded-tr-2xl mt-[-1px]"><div className="flex justify-between items-center mb-6"><h3 className="text-lg font-bold text-slate-800">Struktur Kelas</h3><button onClick={handleCreateModule} className="flex items-center gap-2 bg-teal-700 hover:bg-teal-800 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-lg shadow-teal-700/20"><FolderPlus size={18} /> Tambah Bab</button></div>
+          <div className="space-y-6">{safeModules.length === 0 ? (<div className="text-center py-12 bg-slate-50 border-2 border-dashed border-slate-200 rounded-xl text-slate-400">Belum ada bab/topik.</div>) : (safeModules.map((module, idx) => (<div key={idx} className="border border-slate-200 rounded-xl overflow-hidden shadow-sm"><div className="bg-slate-50 px-4 py-3 border-b border-slate-200 flex justify-between items-center"><span className="font-bold text-slate-700">{module.title}</span><button onClick={() => { setTargetModuleIdx(idx); setShowAddMaterial(true); }} className="text-xs flex items-center gap-1 bg-white border border-slate-200 px-3 py-1.5 rounded-lg hover:border-teal-500 hover:text-teal-700 font-bold transition-all"><Plus size={14} /> Tambah Item</button></div><div className="p-2 bg-white space-y-1">{module.items.map((item, i) => (<div key={i} className="flex items-center gap-3 p-3 hover:bg-slate-50 rounded-lg border-b border-slate-100 last:border-0 group"><div className={`p-2 rounded-lg ${item.type === 'assignment' ? 'bg-red-100 text-red-600' : item.type === 'quiz' ? 'bg-purple-100 text-purple-600' : 'bg-blue-100 text-blue-600'}`}>{item.type === 'assignment' ? <CheckSquare size={16} /> : item.type === 'quiz' ? <HelpCircle size={16} /> : <Video size={16} />}</div><div className="flex-1"><a href={item.url} target="_blank" rel="noreferrer" className="text-slate-700 text-sm font-bold hover:underline block">{item.title}</a></div><button onClick={() => handleDeleteItem(idx, i)} className="text-slate-300 hover:text-red-500"><Trash2 size={16} /></button></div>))}</div></div>)))}</div>
+        </div>
+      )}
+      {activeTab === 'diskusi' && <DiscussionBoard discussions={course.discussions || []} onSend={handleSendDiscussion} />}
+      {activeTab === 'absensi' && (
+          <div className="bg-white border border-slate-200 rounded-b-2xl p-6 shadow-sm rounded-tr-2xl mt-[-1px]"><div className="flex justify-between items-center mb-6"><h3 className="text-lg font-bold text-slate-800">Absensi Hari Ini ({new Date().toLocaleDateString()})</h3><button className="bg-teal-700 text-white px-4 py-2 rounded-lg font-bold text-sm" onClick={() => alert("Absensi Tersimpan!")}>Simpan Absensi</button></div><table className="w-full text-left border-collapse"><thead><tr className="bg-slate-50 text-slate-500 text-xs uppercase font-bold"><th className="p-3 rounded-tl-lg">Nama Siswa</th><th className="p-3 text-center">Hadir</th><th className="p-3 text-center">Izin</th><th className="p-3 text-center">Sakit</th><th className="p-3 text-center rounded-tr-lg">Alpha</th></tr></thead><tbody>{attendance.map(student => (<tr key={student.id} className="border-b border-slate-100 hover:bg-slate-50"><td className="p-3 font-bold text-slate-700">{student.name}</td>{['H','I','S','A'].map(status => (<td key={status} className="p-3 text-center"><button onClick={() => { setAttendance(attendance.map(s => s.id === student.id ? {...s, status} : s)); }} className={`w-8 h-8 rounded-full font-bold text-sm transition-all ${student.status === status ? (status==='H'?'bg-green-100 text-green-700':status==='A'?'bg-red-100 text-red-700':'bg-yellow-100 text-yellow-700') : 'bg-slate-100 text-slate-400'}`}>{status}</button></td>))}</tr>))}</tbody></table></div>
+      )}
+      {activeTab === 'nilai' && (<div className="bg-white border border-slate-200 rounded-b-2xl p-6 shadow-sm rounded-tr-2xl mt-[-1px]"><div className="flex justify-between items-center mb-4"><h3 className="text-lg font-bold text-slate-800">Nilai</h3><button onClick={handleExportCSV} className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg text-sm font-bold"><Download size={16} /> CSV</button></div><table className="w-full text-left border-collapse"><thead><tr className="bg-slate-50 text-slate-500 text-xs font-bold"><th className="p-3">Siswa</th><th className="p-3">File</th><th className="p-3">Nilai</th></tr></thead><tbody>{submissions.map((sub, i) => (<tr key={i} className="border-b"><td className="p-3 font-bold text-slate-700">{sub.studentName}</td><td className="p-3"><a href={sub.fileUrl} target="_blank" className="text-blue-600 hover:underline text-sm">{sub.fileName}</a></td><td className="p-3 flex gap-2"><input type="number" className="w-16 p-1 border rounded" onChange={(e) => setGradingScore({...gradingScore, [i]: e.target.value})} /><button onClick={() => handleGrade(sub, gradingScore[i])} className="bg-teal-700 text-white p-1 rounded"><CheckCircle size={16} /></button></td></tr>))}</tbody></table></div>)}
 
-          {/* Upload Modal */}
-          {showAdd && (
-              <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[60]">
-                  <div className="bg-white p-6 rounded-2xl w-96 shadow-2xl">
-                      <h3 className="font-bold mb-4">Tambah Materi</h3>
-                      <input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Judul File" className="w-full border p-2 rounded mb-3"/>
-                      <input type="file" onChange={e=>setFile(e.target.files[0])} className="w-full border p-2 rounded mb-4 text-sm"/>
-                      <div className="flex justify-end gap-2">
-                          <button onClick={() => setShowAdd(false)} className="px-4 py-2 text-slate-500">Batal</button>
-                          <button onClick={handleSave} disabled={uploading} className="bg-teal-600 text-white px-4 py-2 rounded">
-                              {uploading ? "Menyimpan..." : "Simpan"}
-                          </button>
-                      </div>
-                  </div>
-              </div>
-          )}
-      </div>
+      {showAddMaterial && (
+        <div className="fixed inset-0 z-[70] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"><div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto"><h3 className="text-lg font-bold text-slate-800">Tambah Item</h3><div className="flex gap-2 p-1 bg-slate-100 rounded-lg mb-4"><button onClick={() => setAddType('file')} className={`flex-1 py-2 text-sm font-bold rounded-md ${addType === 'file' ? 'bg-white shadow text-teal-700' : 'text-slate-500'}`}>File</button><button onClick={() => setAddType('link')} className={`flex-1 py-2 text-sm font-bold rounded-md ${addType === 'link' ? 'bg-white shadow text-teal-700' : 'text-slate-500'}`}>Link</button><button onClick={() => setAddType('assignment')} className={`flex-1 py-2 text-sm font-bold rounded-md ${addType === 'assignment' ? 'bg-white shadow text-teal-700' : 'text-slate-500'}`}>Tugas</button><button onClick={() => setAddType('quiz')} className={`flex-1 py-2 text-sm font-bold rounded-md ${addType === 'quiz' ? 'bg-white shadow text-teal-700' : 'text-slate-500'}`}>Kuis</button></div><div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">Judul</label><input value={title} onChange={e => setTitle(e.target.value)} className="w-full border border-slate-300 rounded-xl p-3" placeholder="Judul..." /></div>
+        {addType === 'file' && (<div className="border-2 border-dashed border-slate-300 rounded-xl p-6 text-center relative"><input type="file" onChange={handleFileChange} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" /><Upload size={32} className="mx-auto text-slate-400 mb-2" /><p className="text-sm text-slate-500">{file ? file.name : "Pilih File"}</p></div>)}
+        {addType === 'link' && (<div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">URL</label><input value={linkUrl} onChange={e => setLinkUrl(e.target.value)} className="w-full border border-slate-300 rounded-xl p-3" placeholder="https://..." /></div>)}
+        {addType === 'assignment' && (<div className="space-y-4"><div><label className="block text-xs font-bold text-slate-500 uppercase mb-1">Batas Waktu</label><input type="date" value={deadline} onChange={e => setDeadline(e.target.value)} className="w-full border border-slate-300 rounded-xl p-3" /></div><div><label className="block text-xs font-bold text-slate-500 uppercase mb-2">Lampiran (Opsional)</label><div className="flex gap-2 mb-2"><button onClick={() => setAssignAttachType('none')} className={`px-3 py-1 text-xs rounded-full border ${assignAttachType === 'none' ? 'bg-slate-200 border-slate-300 font-bold' : 'border-slate-200'}`}>Tidak Ada</button><button onClick={() => setAssignAttachType('file')} className={`px-3 py-1 text-xs rounded-full border ${assignAttachType === 'file' ? 'bg-teal-100 border-teal-300 text-teal-700 font-bold' : 'border-slate-200'}`}>File (PDF/Gambar)</button><button onClick={() => setAssignAttachType('link')} className={`px-3 py-1 text-xs rounded-full border ${assignAttachType === 'link' ? 'bg-blue-100 border-blue-300 text-blue-700 font-bold' : 'border-slate-200'}`}>Link</button></div>{assignAttachType === 'file' && (<div className="border border-dashed border-slate-300 rounded-lg p-3 bg-slate-50 relative"><input type="file" onChange={handleAssignFileChange} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" /><p className="text-xs text-center text-slate-500">{assignFile ? assignFile.name : "Klik untuk upload lampiran"}</p></div>)}{assignAttachType === 'link' && (<input value={assignLink} onChange={e => setAssignLink(e.target.value)} className="w-full border border-slate-300 rounded-lg p-2 text-xs outline-none" placeholder="https://sumber-bacaan.com" />)}</div></div>)}
+        {addType === 'quiz' && (
+            <div className="space-y-4 border-t pt-4">
+                <p className="text-sm font-bold">Tambah Pertanyaan ({quizQuestions.length} tersimpan)</p>
+                <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
+                    <input className="w-full border p-2 rounded mb-2 text-sm" placeholder="Pertanyaan..." id="qText" />
+                    <div className="grid grid-cols-2 gap-2 mb-2"><input className="border p-1 rounded text-sm" placeholder="Opsi A" id="optA" /><input className="border p-1 rounded text-sm" placeholder="Opsi B" id="optB" /></div>
+                    <div className="flex gap-2 text-xs items-center mb-2">Jawaban Benar: <select id="correctOpt" className="border p-1 rounded"><option value="0">Opsi A</option><option value="1">Opsi B</option></select></div>
+                    <button onClick={handleAddQuestion} className="w-full bg-slate-200 hover:bg-slate-300 text-slate-700 py-1 rounded text-xs font-bold">+ Tambah Soal</button>
+                </div>
+            </div>
+        )}
+        <div className="flex justify-end gap-2 pt-2"><button onClick={() => setShowAddMaterial(false)} className="px-4 py-2 text-slate-500 font-bold">Batal</button><button onClick={handleSaveItem} className="px-6 py-2 bg-teal-700 text-white rounded-xl font-bold">{uploading ? "Menyimpan..." : "Simpan"}</button></div></div></div>
+      )}
+    </div>
   );
 };
 
 // --- UPGRADED STUDENT VIEW (With Flashcards) ---
-// --- UPGRADED STUDENT VIEW (With Permanent File Upload) ---
-const StudentCourseView = ({ course, user, onBack, onSubmitAssignment, flashcardDecks }) => {
-  const [activeItem, setActiveItem] = useState(null); 
-  const [file, setFile] = useState(null); 
-  const [uploading, setUploading] = useState(false);
-  
-  const mySubmission = course.submissions?.find(s => s.assignmentId === activeItem?.id && s.studentId === user.uid);
+const StudentCourseView = ({ course, user, onBack, onSubmitAssignment, onToggleComplete, onUpdateDiscussions, flashcardDecks = [] }) => {
+  const [activeItem, setActiveItem] = useState(null);
+  const [activeTab, setActiveTab] = useState('materi');
+  const [file, setFile] = useState(null);
+  const [submitted, setSubmitted] = useState(false);
+  const [note, setNote] = useState(() => { try { return localStorage.getItem(`note-${course.id}`) || ""; } catch { return ""; } });
+  const [isTakingQuiz, setIsTakingQuiz] = useState(false);
+  const [showCertificate, setShowCertificate] = useState(false);
+  const [focusMode, setFocusMode] = useState(false);
 
-  const handleTurnIn = async () => {
-      if(!file) return;
-      setUploading(true);
-      try {
-          const base64 = await fileToBase64(file);
-          let finalUrl = base64;
-          
-          if(base64.length > 1000000) {
-             const localRef = saveFileLocally(base64);
-             if(localRef) finalUrl = localRef;
-             else throw new Error("Storage Penuh");
-          }
-          
-          await onSubmitAssignment(course.id, activeItem.id, finalUrl, file.name);
-          setFile(null);
-          alert("Tugas Terkirim!");
-      } catch(e) { 
-          console.error(e); 
-          alert("Gagal upload: " + e.message); 
-      } finally { 
-          setUploading(false); 
-      }
+  // Flashcard Player State
+  const [playingDeck, setPlayingDeck] = useState(null);
+  const [fcIndex, setFcIndex] = useState(0);
+  const [fcFlipped, setFcFlipped] = useState(false);
+
+  const safeModules = course.modules || [];
+  const safeSubmissions = course.submissions || [];
+  const mySubmission = safeSubmissions.find(s => s.assignmentId === activeItem?.id && s.studentId === user.uid);
+  
+  // Filter Decks for this Course
+  const courseDecks = flashcardDecks.filter(d => d.courseId === course.id);
+
+  const handleSaveNote = (e) => { setNote(e.target.value); localStorage.setItem(`note-${course.id}`, e.target.value); };
+  const getYoutubeEmbedUrl = (url) => { if (!url) return ''; const match = url.match(/^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/); return (match && match[2].length === 11) ? `https://www.youtube.com/embed/${match[2]}` : url; };
+  const handleTurnIn = () => { if(!file) return; const fakeUrl = URL.createObjectURL(file); onSubmitAssignment(course.id, activeItem.id, fakeUrl, file.name); setSubmitted(true); setFile(null); };
+  const handleSendDiscussion = (text) => { const newMsg = { id: Date.now(), user: "Saya", text, time: "Baru saja", role: "student" }; onUpdateDiscussions(course.id, [...(course.discussions || []), newMsg]); };
+
+  // Flashcard Navigation Helpers
+  const nextCard = () => { if(fcIndex < playingDeck.cards.length - 1) { setFcFlipped(false); setTimeout(() => setFcIndex(i => i+1), 150); }};
+  const prevCard = () => { if(fcIndex > 0) { setFcFlipped(false); setTimeout(() => setFcIndex(i => i-1), 150); }};
+
+  if (isTakingQuiz && activeItem?.type === 'quiz') {
+      return (<div className="max-w-4xl mx-auto pt-10"><QuizView questions={activeItem.questions} onFinish={() => setIsTakingQuiz(false)} onScoreSave={(score) => alert(`Skor ${score} tersimpan!`)} /></div>);
+  }
+
+  const renderContent = () => {
+    // 1. Flashcard Player Mode
+    if (playingDeck) {
+        const card = playingDeck.cards[fcIndex];
+        return (
+            <div className="h-full flex flex-col items-center justify-center p-10 bg-slate-800 rounded-3xl text-white relative">
+                <button onClick={() => setPlayingDeck(null)} className="absolute top-6 left-6 flex items-center gap-2 text-slate-400 hover:text-white"><ChevronLeft/> Keluar</button>
+                <h3 className="text-xl font-bold mb-8 text-teal-400">{playingDeck.title}</h3>
+                
+                <div className="w-full max-w-lg h-64 perspective-1000 cursor-pointer" onClick={() => setFcFlipped(!fcFlipped)}>
+                    <motion.div 
+                        initial={false} animate={{ rotateY: fcFlipped ? 180 : 0 }} transition={{ duration: 0.6, type: "spring" }} style={{ transformStyle: "preserve-3d" }} className="w-full h-full relative"
+                    >
+                        {/* Front */}
+                        <div className="absolute inset-0 bg-white rounded-2xl flex items-center justify-center p-6 text-slate-800 backface-hidden" style={{ backfaceVisibility: "hidden" }}>
+                            <h2 className="text-3xl font-bold text-center">{card.q}</h2>
+                            <p className="absolute bottom-4 text-xs text-slate-400 uppercase tracking-widest">Klik untuk balik</p>
+                        </div>
+                        {/* Back */}
+                        <div className="absolute inset-0 bg-teal-600 rounded-2xl flex items-center justify-center p-6 text-white backface-hidden" style={{ backfaceVisibility: "hidden", transform: "rotateY(180deg)" }}>
+                            <h2 className="text-2xl font-bold text-center">{card.a}</h2>
+                        </div>
+                    </motion.div>
+                </div>
+
+                <div className="flex items-center gap-8 mt-8">
+                    <button onClick={prevCard} disabled={fcIndex===0} className="p-3 bg-white/10 rounded-full hover:bg-white/20 disabled:opacity-30"><ChevronLeft size={24}/></button>
+                    <span className="font-mono">{fcIndex + 1} / {playingDeck.cards.length}</span>
+                    <button onClick={nextCard} disabled={fcIndex===playingDeck.cards.length-1} className="p-3 bg-white/10 rounded-full hover:bg-white/20 disabled:opacity-30"><ChevronRight size={24}/></button>
+                </div>
+            </div>
+        );
+    }
+
+    // 2. Standard Content Modes
+    if (!activeItem) return (<div className="text-center p-8"><BookOpen size={64} className="text-slate-700 mx-auto mb-4 opacity-50" /><h3 className="text-2xl font-bold text-white mb-2">Selamat Datang</h3><p className="text-slate-400">Pilih materi di sebelah kanan.</p>{course.announcement && (<div className="mt-8 bg-yellow-50 border-l-4 border-yellow-400 p-4 text-left rounded-r-lg max-w-md mx-auto"><div className="flex gap-2 items-center mb-1 text-yellow-700 font-bold"><Megaphone size={16} /> PENGUMUMAN PENTING</div><p className="text-slate-700 text-sm">{course.announcement}</p></div>)}</div>);
+    if (activeItem.type === 'quiz') { return (<div className="text-center p-12 bg-white rounded-3xl shadow-xl max-w-md mx-auto"><HelpCircle size={64} className="mx-auto text-teal-600 mb-4" /><h3 className="text-2xl font-bold text-slate-800 mb-2">{activeItem.title}</h3><p className="text-slate-500 mb-6">Uji pemahamanmu dengan kuis ini.</p><button onClick={() => setIsTakingQuiz(true)} className="px-8 py-3 bg-teal-600 text-white rounded-xl font-bold hover:bg-teal-700 transition-all">Mulai Kuis</button></div>); }
+    if (activeItem.type === 'assignment') { return (<div className="text-center bg-white p-8 rounded-2xl w-96 shadow-2xl overflow-y-auto max-h-full"><div className="w-16 h-16 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto mb-4"><CheckSquare size={32} /></div><h3 className="text-xl font-bold text-slate-800 mb-1">{activeItem.title}</h3><p className="text-slate-500 text-sm mb-6">Deadline: {activeItem.deadline}</p>{activeItem.attachment && (<div className="bg-slate-50 border border-slate-200 rounded-xl p-3 mb-6 text-left flex items-center gap-3"><div className="bg-white p-2 rounded-lg border border-slate-200 text-blue-600">{activeItem.attachment.type === 'link' ? <LinkIcon size={16} /> : <FileText size={16} />}</div><div className="flex-1 overflow-hidden"><p className="text-xs text-slate-500 font-bold uppercase">Lampiran</p><a href={activeItem.attachment.url} target="_blank" rel="noreferrer" className="text-sm font-bold text-slate-800 truncate hover:text-blue-600 hover:underline block">{activeItem.attachment.title || "Lihat Lampiran"}</a></div></div>)}{(mySubmission || submitted) ? (<div className="bg-green-50 text-green-700 p-4 rounded-xl font-bold border border-green-200 flex items-center justify-center gap-2"><CheckCircle size={20} /> Sudah Dikumpulkan</div>) : (<div className="space-y-4"><div className="border-2 border-dashed border-slate-300 p-6 rounded-xl cursor-pointer hover:bg-slate-50 transition-all relative"><input type="file" onChange={(e) => setFile(e.target.files[0])} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer" /><Upload size={24} className="mx-auto text-slate-400 mb-2" /><p className="text-sm font-bold text-slate-600">{file ? file.name : "Klik untuk Upload"}</p></div><button onClick={handleTurnIn} disabled={!file} className="w-full py-2 bg-teal-700 text-white rounded-lg font-bold disabled:opacity-50">Serahkan Tugas</button></div>)}</div>); }
+    if (activeItem.type === 'video') { if (activeItem.isYoutube) return <iframe src={getYoutubeEmbedUrl(activeItem.url)} className="w-full h-full" title="YouTube" frameBorder="0" allowFullScreen></iframe>; return <video controls src={activeItem.url} className="max-h-[60vh] max-w-full rounded-lg shadow-lg bg-black" />; }
+    if (activeItem.type === 'image') { return <img src={activeItem.url} alt="Materi" className="max-h-[70vh] max-w-full rounded-lg shadow-lg object-contain" />; }
+    return (<div className="w-full h-full flex flex-col items-center justify-center bg-slate-800 text-white p-4"><div className="text-center"><FileText size={80} className="text-slate-500 mx-auto mb-6" /><h3 className="text-xl font-bold mb-2">{activeItem.title}</h3><a href={activeItem.url} download={activeItem.title} className="px-8 py-3 bg-teal-600 hover:bg-teal-500 text-white rounded-xl font-bold shadow-lg inline-flex items-center gap-2 transition-all"><Upload className="rotate-180" size={20} /> Download File</a></div></div>);
   };
 
-  // Sidebar for Course Modules
-  if(!activeItem) return (
-      <div className="flex h-full gap-6">
-          <div className="w-80 border-r p-4 space-y-4 bg-white h-full overflow-y-auto">
-              <div className="flex items-center gap-2 mb-4 text-slate-400 cursor-pointer hover:text-slate-600" onClick={onBack}>
-                  <ChevronLeft size={20} /> <span className="font-bold">Kembali</span>
-              </div>
-              <h2 className="text-xl font-bold mb-4">{course.title}</h2>
-              {course.modules?.map((m,i) => (
-                  <div key={i}>
-                      <h4 className="font-bold text-xs text-slate-400 uppercase mb-2">{m.title}</h4>
-                      {m.items.map(it => (
-                          <div key={it.id} onClick={()=>setActiveItem(it)} className="p-3 hover:bg-slate-50 cursor-pointer rounded flex items-center gap-2 text-sm text-slate-700">
-                              {it.type === 'assignment' ? <CheckSquare size={16} className="text-red-500"/> : <FileText size={16} className="text-blue-500"/>}
-                              {it.title}
-                          </div>
-                      ))}
-                  </div>
-              ))}
-          </div>
-          <div className="flex-1 flex items-center justify-center text-slate-400">
-              <div className="text-center">
-                  <BookOpen size={48} className="mx-auto mb-2 opacity-50"/>
-                  <p>Pilih materi di sebelah kiri</p>
-              </div>
-          </div>
-      </div>
-  );
+  const totalItems = safeModules.reduce((acc, mod) => acc + mod.items.length, 0);
+  const completedItems = safeModules.reduce((acc, mod) => acc + mod.items.filter(i => i.completed).length, 0);
+  const progress = totalItems === 0 ? 0 : Math.round((completedItems / totalItems) * 100);
 
-  // Content View
   return (
-      <div className="p-8 h-full flex flex-col">
-          <button onClick={()=>setActiveItem(null)} className="mb-6 flex items-center gap-2 text-slate-500 hover:text-teal-700 font-bold w-fit">
-              <ChevronLeft size={20}/> Kembali ke Menu
-          </button>
-          
-          <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-200 max-w-3xl mx-auto w-full">
-              <div className="flex items-center gap-4 mb-6">
-                  <div className={`p-3 rounded-xl ${activeItem.type==='assignment'?'bg-red-100 text-red-600':'bg-blue-100 text-blue-600'}`}>
-                      {activeItem.type==='assignment' ? <CheckSquare size={32}/> : <FileText size={32}/>}
-                  </div>
-                  <div>
-                      <h2 className="text-2xl font-bold text-slate-800">{activeItem.title}</h2>
-                      <p className="text-slate-500 text-sm capitalize">{activeItem.type}</p>
-                  </div>
+    <div className={`max-w-6xl mx-auto h-[calc(100vh-8rem)] flex flex-col lg:flex-row gap-6 transition-all ${focusMode ? 'fixed inset-0 z-50 bg-white p-8 max-w-none h-screen' : ''}`}>
+      {/* LEFT CONTENT AREA */}
+      <div className="flex-1 flex flex-col">
+          <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-4">
+                  {!focusMode && <button onClick={onBack} className="p-2 bg-white rounded-lg text-slate-400 hover:text-teal-700"><ChevronRight className="rotate-180" /></button>}
+                  <h2 className="text-xl font-bold text-slate-800 truncate max-w-xs">{activeItem ? activeItem.title : course.title}</h2>
               </div>
-
-              {/* Download Teacher's File */}
-              {activeItem.url && (
-                  <a 
-                    href={getFileFromStorage(activeItem.url)} 
-                    download={activeItem.fileName} 
-                    className="flex items-center gap-2 text-blue-600 underline mb-8 bg-blue-50 p-4 rounded-xl w-fit font-bold text-sm hover:bg-blue-100 transition-all"
-                  >
-                      <Download size={18} /> Download Materi Guru
-                  </a>
-              )}
-
-              {/* Assignment Submission Area */}
-              {activeItem.type === 'assignment' && (
-                  <div className="border-t pt-6">
-                      <h3 className="font-bold text-slate-800 mb-4">Pengumpulan Tugas</h3>
-                      {mySubmission ? (
-                          <div className="bg-green-50 border border-green-200 rounded-xl p-4 flex items-center justify-between">
-                              <div className="flex items-center gap-3 text-green-800 font-bold">
-                                  <CheckCircle size={24} />
-                                  <span>Tugas Sudah Dikumpulkan</span>
-                              </div>
-                              <a 
-                                href={getFileFromStorage(mySubmission.fileUrl)} 
-                                download={mySubmission.fileName} 
-                                className="text-xs bg-white px-3 py-1.5 rounded-lg border border-green-200 text-green-700 hover:bg-green-50"
-                              >
-                                  Lihat File Saya
-                              </a>
-                          </div>
-                      ) : (
-                          <div className="space-y-3">
-                              <div className="border-2 border-dashed border-slate-300 rounded-xl p-8 text-center hover:bg-slate-50 transition-all relative">
-                                  <input type="file" onChange={e=>setFile(e.target.files[0])} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"/>
-                                  <Upload size={32} className="mx-auto text-slate-400 mb-2"/>
-                                  <p className="text-sm font-bold text-slate-600">{file ? file.name : "Klik untuk Upload File"}</p>
-                              </div>
-                              <button 
-                                onClick={handleTurnIn} 
-                                disabled={uploading || !file} 
-                                className="w-full bg-teal-700 text-white py-3 rounded-xl font-bold hover:bg-teal-800 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2"
-                              >
-                                  {uploading ? "Mengupload..." : "Serahkan Tugas"}
-                              </button>
-                          </div>
-                      )}
-                  </div>
-              )}
+              <div className="flex items-center gap-2">
+                  {course.meetingLink && (<a href={course.meetingLink} target="_blank" rel="noreferrer" className="flex items-center gap-2 bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-full font-bold text-sm shadow-lg shadow-red-500/30 animate-pulse"><Video size={16} /> Live</a>)}
+                  <button onClick={() => setFocusMode(!focusMode)} className="p-2 bg-slate-100 hover:bg-teal-100 text-slate-600 hover:text-teal-700 rounded-lg" title="Mode Fokus">{focusMode ? <Minimize size={20} /> : <Maximize size={20} />}</button>
+              </div>
+          </div>
+          <div className="flex-1 bg-slate-900 rounded-3xl overflow-hidden relative shadow-xl border border-slate-800 flex items-center justify-center">
+             {activeTab === 'diskusi' ? (<div className="w-full h-full bg-white overflow-hidden rounded-3xl"><div className="p-4 border-b bg-slate-50 font-bold text-slate-700">Forum Diskusi Kelas</div><div className="h-full pb-16"><DiscussionBoard discussions={course.discussions || []} onSend={handleSendDiscussion} /></div></div>) : 
+              activeTab === 'notes' ? (<div className="w-full h-full bg-yellow-50 overflow-hidden rounded-3xl p-6 flex flex-col"><h3 className="font-bold text-yellow-800 mb-2 flex items-center gap-2"><PenTool size={18} /> Catatan Pribadi</h3><textarea value={note} onChange={handleSaveNote} className="flex-1 bg-transparent border-none outline-none text-slate-700 resize-none leading-relaxed font-medium" placeholder="Tulis catatan penting di sini..." /><p className="text-[10px] text-yellow-600 mt-2 text-right">*Disimpan otomatis</p></div>) : 
+              renderContent()}
           </div>
       </div>
+
+      {/* RIGHT SIDEBAR (Navigation & Flashcards) */}
+      <div className={`w-full lg:w-96 bg-white border border-slate-200 rounded-3xl flex flex-col overflow-hidden shadow-sm ${focusMode ? 'hidden' : ''}`}>
+        <div className="flex border-b border-slate-200">
+            <button onClick={() => {setActiveTab('materi'); setActiveItem(null); setIsTakingQuiz(false); setPlayingDeck(null);}} className={`flex-1 py-4 font-bold text-sm ${activeTab === 'materi' ? 'text-teal-700 border-b-2 border-teal-700' : 'text-slate-500'}`}>Materi</button>
+            <button onClick={() => setActiveTab('flashcards')} className={`flex-1 py-4 font-bold text-sm ${activeTab === 'flashcards' ? 'text-teal-700 border-b-2 border-teal-700' : 'text-slate-500'}`}>Kartu</button>
+            <button onClick={() => setActiveTab('diskusi')} className={`flex-1 py-4 font-bold text-sm ${activeTab === 'diskusi' ? 'text-teal-700 border-b-2 border-teal-700' : 'text-slate-500'}`}>Diskusi</button>
+            <button onClick={() => setActiveTab('notes')} className={`flex-1 py-4 font-bold text-sm ${activeTab === 'notes' ? 'text-teal-700 border-b-2 border-teal-700' : 'text-slate-500'}`}>Catatan</button>
+        </div>
+        
+        {activeTab === 'materi' && (
+           <div className="flex-1 overflow-y-auto">
+              <div className="px-6 pt-6 pb-2"><div className="flex justify-between text-xs font-bold text-slate-500 mb-1"><span>Progress</span><span>{progress}%</span></div><div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden"><div className="bg-teal-500 h-full rounded-full transition-all duration-500" style={{width: `${progress}%`}}></div></div>{progress === 100 && (<button onClick={() => setShowCertificate(true)} className="mt-4 w-full py-3 bg-gradient-to-r from-yellow-400 to-orange-500 text-white font-bold rounded-xl shadow-lg flex items-center justify-center gap-2 animate-bounce"><Award size={20} /> Klaim Sertifikat</button>)}</div>
+              <div className="p-4 space-y-6">{safeModules.map((mod, i) => (<div key={i}><h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3 pl-2">{mod.title}</h4><div className="space-y-2">{mod.items.map((item) => (<div key={item.id} className={`flex items-center gap-2 p-2 rounded-xl transition-all ${activeItem?.id === item.id ? 'bg-teal-50 border border-teal-200' : 'hover:bg-slate-50 border border-transparent'}`}><button onClick={() => onToggleComplete(course.id, item.id, !item.completed)} className={`p-1 rounded-full border ${item.completed ? 'bg-green-500 border-green-500 text-white' : 'border-slate-300 text-transparent hover:border-green-500'}`}><CheckCircle size={14} /></button><button onClick={() => {setActiveItem(item); setIsTakingQuiz(false);}} className="flex-1 flex items-center gap-3 text-left"><div className={`p-2 rounded-lg ${item.type === 'assignment' ? 'bg-red-100 text-red-600' : item.type === 'quiz' ? 'bg-purple-100 text-purple-600' : 'bg-slate-100 text-slate-500'}`}>{item.type === 'assignment' ? <CheckSquare size={16} /> : item.type === 'quiz' ? <HelpCircle size={16} /> : <Video size={16} />}</div><div className="flex-1 overflow-hidden"><p className={`text-sm font-bold truncate ${item.completed ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{item.title}</p></div></button></div>))}</div></div>))}</div>
+           </div>
+        )}
+
+        {/* NEW: FLASHCARD TAB CONTENT */}
+        {activeTab === 'flashcards' && (
+            <div className="flex-1 p-6 overflow-y-auto">
+                <h3 className="font-bold text-slate-800 mb-4">Kartu Pintar Kelas Ini</h3>
+                {courseDecks.length === 0 ? (
+                    <div className="text-center py-10 border-2 border-dashed border-slate-200 rounded-xl text-slate-400">
+                        <Layers size={32} className="mx-auto mb-2 opacity-50"/>
+                        <p className="text-sm">Guru belum menambahkan kartu untuk kelas ini.</p>
+                    </div>
+                ) : (
+                    <div className="space-y-4">
+                        {courseDecks.map(deck => (
+                            <div key={deck.id} onClick={() => { setPlayingDeck(deck); setFcIndex(0); setFcFlipped(false); setActiveItem(null); }} className="p-4 border border-slate-200 rounded-xl cursor-pointer hover:bg-teal-50 hover:border-teal-200 transition-all flex items-center gap-4 group">
+                                <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${deck.color} group-hover:scale-110 transition-transform`}>
+                                    <Layers size={20}/>
+                                </div>
+                                <div>
+                                    <h4 className="font-bold text-slate-700 group-hover:text-teal-700">{deck.title}</h4>
+                                    <p className="text-xs text-slate-500">{deck.cards.length} Kartu</p>
+                                </div>
+                                <Play size={16} className="ml-auto text-slate-300 group-hover:text-teal-600"/>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
+        )}
+
+        {activeTab === 'diskusi' && (<div className="p-6 text-center text-slate-500 text-sm">Gunakan panel diskusi di layar utama.</div>)}
+        {activeTab === 'notes' && (<div className="p-6 text-center text-slate-500 text-sm">Tulis catatanmu di layar utama.</div>)}
+      </div>
+      <CertificateModal isOpen={showCertificate} onClose={() => setShowCertificate(false)} studentName={user.name} courseName={course.title} />
+    </div>
   );
 };
 
 const EduFlowAppContent = () => {
   const [user, setUser] = useState(null); 
-  const [loadingAuth, setLoadingAuth] = useState(true);
   const [activeView, setActiveView] = useState('dashboard');
+  const [flashcardDecks, setFlashcardDecks] = useState(INITIAL_FLASHCARD_DECKS);
   const [isMobileOpen, setIsMobileOpen] = useState(false);
   const [courses, setCourses] = useState([]); 
   const [selectedCourse, setSelectedCourse] = useState(null);
@@ -1805,43 +1707,26 @@ const EduFlowAppContent = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isNotificationOpen, setIsNotificationOpen] = useState(false);
   const [personalEvents, setPersonalEvents] = useState([]);
-  const [flashcardDecks, setFlashcardDecks] = useState(INITIAL_FLASHCARD_DECKS);
 
-  // --- ROBUST AUTH CHECKER ---
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       if (currentUser) {
-        // Check DB with 2s Timeout
-        const dbTask = getDoc(doc(db, "users", currentUser.uid));
-        const timeoutTask = new Promise((resolve) => setTimeout(() => resolve("TIMEOUT"), 2000));
-
+        const docRef = doc(db, "users", currentUser.uid);
         try {
-            const result = await Promise.race([dbTask, timeoutTask]);
-            if (result !== "TIMEOUT" && result.exists()) {
-                setUser({ uid: currentUser.uid, ...result.data() });
-            } else {
-                // Fallback if offline
-                setUser({ uid: currentUser.uid, email: currentUser.email, name: "User", role: "student" });
-            }
-        } catch (e) {
-            // Fallback if error
-            setUser({ uid: currentUser.uid, email: currentUser.email, name: "User", role: "student" });
-        }
-      } else { 
-          setUser(null); 
-      }
-      setLoadingAuth(false);
+            const docSnap = await getDoc(docRef);
+            if (docSnap.exists()) setUser({ uid: currentUser.uid, ...docSnap.data() });
+        } catch (e) { console.error("DB Error", e); }
+      } else { setUser(null); }
     });
     return () => unsubscribe();
   }, []);
 
-  // --- DATA LISTENERS ---
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, "courses"), (snapshot) => {
       const coursesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       if(coursesData.length > 0) setCourses(coursesData);
       else setCourses(INITIAL_COURSES);
-    }, (error) => { console.log("Offline mode: using default courses"); });
+    }, (error) => { console.error("Snapshot Error", error); });
     return () => unsubscribe();
   }, []);
 
@@ -1850,26 +1735,25 @@ const EduFlowAppContent = () => {
       return c.title.toLowerCase().includes(searchQuery.toLowerCase()) || (c.code && c.code.toLowerCase().includes(searchQuery.toLowerCase()));
   });
 
-  // Handlers
   const handleUpdateCourse = async (courseId, newData) => {
     const updatedCourses = courses.map(c => c.id === courseId ? { ...c, ...newData } : c);
     setCourses(updatedCourses);
     if (selectedCourse?.id === courseId) setSelectedCourse({ ...selectedCourse, ...newData });
-    updateDoc(doc(db, "courses", courseId), newData).catch(e => console.warn("Offline update"));
+    await updateDoc(doc(db, "courses", courseId), newData);
   };
 
   const handleUpdateModules = async (courseId, newModules) => {
     const updatedCourses = courses.map(c => c.id === courseId ? { ...c, modules: newModules } : c);
     setCourses(updatedCourses);
     if (selectedCourse?.id === courseId) setSelectedCourse({ ...selectedCourse, modules: newModules });
-    updateDoc(doc(db, "courses", courseId), { modules: newModules }).catch(e => console.warn("Offline update"));
+    await updateDoc(doc(db, "courses", courseId), { modules: newModules });
   };
 
   const handleUpdateDiscussions = async (courseId, newDiscussions) => {
     const updatedCourses = courses.map(c => c.id === courseId ? { ...c, discussions: newDiscussions } : c);
     setCourses(updatedCourses);
     if (selectedCourse?.id === courseId) setSelectedCourse({ ...selectedCourse, discussions: newDiscussions });
-    updateDoc(doc(db, "courses", courseId), { discussions: newDiscussions }).catch(e => console.warn("Offline update"));
+    await updateDoc(doc(db, "courses", courseId), { discussions: newDiscussions }); 
   };
 
   const handleSubmitAssignment = async (courseId, assignmentId, fileUrl, fileName) => {
@@ -1902,7 +1786,7 @@ const EduFlowAppContent = () => {
   };
 
   const handleAddCourse = async (newCourse) => {
-    addDoc(collection(db, "courses"), { ...newCourse, modules: [], submissions: [], discussions: [], createdAt: new Date(), students: [] });
+    await addDoc(collection(db, "courses"), { ...newCourse, modules: [], submissions: [], discussions: [], createdAt: new Date(), students: [] });
   };
 
   const handleJoinClass = async (code) => {
@@ -1921,8 +1805,6 @@ const EduFlowAppContent = () => {
     if (viewId === 'courses') setSelectedCourse(null);
   };
 
-  if (loadingAuth) return <div className="min-h-screen flex items-center justify-center text-slate-500 font-bold animate-pulse">Memuat...</div>;
-
   if (!user) return <AuthPage onLogin={setUser} />;
 
   return (
@@ -1932,6 +1814,8 @@ const EduFlowAppContent = () => {
         <header className="h-20 px-8 flex items-center justify-between bg-white border-b border-slate-200 sticky top-0 z-40">
           <div className="flex items-center gap-4 md:hidden"><button onClick={() => setIsMobileOpen(true)}><Menu className="text-slate-500" /></button><span className="font-bold text-teal-700">EduSchool</span></div>
           <div className="hidden md:flex items-center bg-slate-100 rounded-full px-4 py-2 w-96 border border-slate-200 transition-all focus-within:border-teal-500 focus-within:bg-white"><Search size={18} className="text-slate-400 mr-3" /><input type="text" placeholder="Cari materi atau kelas..." className="bg-transparent border-none focus:outline-none text-sm text-slate-700 w-full" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} /></div>
+          
+          {/* NOTIFICATION DROPDOWN */}
           <div className="flex items-center gap-4 relative">
              <button onClick={() => setIsNotificationOpen(!isNotificationOpen)} className="relative p-2 text-slate-500 hover:bg-slate-100 rounded-full transition-colors">
                 <Bell size={20} />
@@ -1945,6 +1829,10 @@ const EduFlowAppContent = () => {
                              <div className="w-8 h-8 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center flex-shrink-0"><BookOpen size={14}/></div>
                              <div><p className="text-xs font-bold text-slate-700">Tugas Baru Matematika</p><p className="text-[10px] text-slate-400">Baru saja</p></div>
                          </div>
+                         <div className="flex gap-3 p-2 hover:bg-slate-50 rounded-lg cursor-pointer">
+                             <div className="w-8 h-8 bg-green-100 text-green-600 rounded-full flex items-center justify-center flex-shrink-0"><CheckCircle size={14}/></div>
+                             <div><p className="text-xs font-bold text-slate-700">Nilai Bahasa Indonesia Keluar</p><p className="text-[10px] text-slate-400">2 jam yang lalu</p></div>
+                         </div>
                      </div>
                  </div>
              )}
@@ -1953,6 +1841,7 @@ const EduFlowAppContent = () => {
         <div className="p-6 lg:p-8 flex-1">
           <AnimatePresence mode="wait">
              {activeView === 'dashboard' && <motion.div key="dash" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><DashboardView user={user} courses={courses} onJoin={() => setIsJoinClassOpen(true)} /></motion.div>}
+             
              {activeView === 'courses' && !selectedCourse && (
                 <motion.div key="course-list" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
                     <div className="flex justify-between items-center mb-6"><h2 className="text-2xl font-bold text-slate-800">{user.role === 'teacher' ? "Kelola Kelas" : "Kelas Saya"}</h2>{user.role === 'student' && (<button onClick={() => setIsJoinClassOpen(true)} className="bg-teal-700 text-white px-4 py-2 rounded-xl font-bold shadow hover:bg-teal-800 transition-colors text-sm">+ Gabung Kelas</button>)}</div>
@@ -1969,6 +1858,7 @@ const EduFlowAppContent = () => {
                     )}
                 </motion.div>
              )}
+
              {activeView === 'course-detail' && selectedCourse && (
                 <motion.div key="course-detail" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
                     {user.role === 'teacher' 
@@ -1992,15 +1882,24 @@ const EduFlowAppContent = () => {
                     }
                 </motion.div>
              )}
+             {activeView === 'profile' && <motion.div key="profile" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><StudentProfileView user={user} /></motion.div>}
+             {activeView === 'whiteboard' && <motion.div key="wb" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><WhiteboardView /></motion.div>}
+             {activeView === 'kanban' && <motion.div key="kanban" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><KanbanBoard /></motion.div>}
+             {activeView === 'flashcards' && (
+   <motion.div key="flash" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+       <FlashcardView 
+          decks={flashcardDecks} 
+          onAddDeck={(newDeck) => setFlashcardDecks([...flashcardDecks, newDeck])} 
+          user={user} 
+          courses={courses}
+       />
+   </motion.div>
+)}
              {activeView === 'quiz' && (<motion.div key="quiz" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}><QuizView onFinish={() => setActiveView('course-detail')} /></motion.div>)}
              {activeView === 'calendar' && <motion.div key="cal" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><CalendarView courses={courses} user={user} onUpdateCourse={handleUpdateCourse} personalEvents={personalEvents} setPersonalEvents={setPersonalEvents} /></motion.div>}
              {activeView === 'library' && <motion.div key="lib" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><LibraryView /></motion.div>}
              {activeView === 'messages' && <motion.div key="msg" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><MessagesView courses={courses} user={user} /></motion.div>}
              {activeView === 'settings' && <motion.div key="set" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><SettingsView user={user} onUpdateUser={setUser} /></motion.div>}
-             {activeView === 'profile' && <motion.div key="profile" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><StudentProfileView user={user} /></motion.div>}
-             {activeView === 'kanban' && <motion.div key="kanban" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><KanbanBoard user={user} /></motion.div>}
-             {activeView === 'flashcards' && <motion.div key="flash" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><FlashcardView decks={flashcardDecks} onAddDeck={(newDeck) => setFlashcardDecks([...flashcardDecks, newDeck])} user={user} courses={courses} /></motion.div>}
-             {activeView === 'whiteboard' && <motion.div key="wb" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><WhiteboardView /></motion.div>}
           </AnimatePresence>
         </div>
       </main>
