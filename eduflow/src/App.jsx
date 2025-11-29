@@ -1821,4 +1821,12 @@ const EduFlowAppContent = () => {
   );
 };
 
+const EduFlowApp = () => {
+  return (
+    <ErrorBoundary>
+      <EduFlowAppContent />
+    </ErrorBoundary>
+  );
+}
+
 export default EduFlowApp;
