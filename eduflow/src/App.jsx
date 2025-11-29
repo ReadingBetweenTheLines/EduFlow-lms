@@ -1679,26 +1679,26 @@ const EduFlowAppContent = () => {
 
   // 1. ROBUST AUTH CHECK
   // --- AUTH CHECKER (FIXED) ---
-  useEffect(() => {
+  // Inside EduFlowAppContent
+useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       if (currentUser) {
+        // Just try to get the doc. If it fails, we handle it.
         try {
-            // FORCE WAIT: Get the real profile from Firestore
             const docRef = doc(db, "users", currentUser.uid);
             const docSnap = await getDoc(docRef);
             
             if (docSnap.exists()) {
                 setUser({ uid: currentUser.uid, ...docSnap.data() });
             } else {
-                // Document doesn't exist? Keep them logged in but warn them
-                console.warn("Profile not found in DB");
+                // If Auth exists but DB data is gone -> Force logout to reset state
+                // Or set a temporary user object
                 setUser({ uid: currentUser.uid, email: currentUser.email, name: "User", role: "student" });
             }
         } catch (e) {
-            console.error("Connection Error", e);
-            // If offline, we might want to kick them to login or show a retry
-            // For now, let's keep them logged out if we can't verify role
-            setUser(null);
+            console.error("Network/DB Error:", e);
+            // Allow login anyway if DB fails
+            setUser({ uid: currentUser.uid, email: currentUser.email, name: "User", role: "student" });
         }
       } else { 
           setUser(null); 
@@ -1706,7 +1706,7 @@ const EduFlowAppContent = () => {
       setLoadingAuth(false);
     });
     return () => unsubscribe();
-  }, []);
+}, []);
 
   // 2. ROBUST DATA LOAD
   useEffect(() => {
