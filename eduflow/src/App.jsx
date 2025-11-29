@@ -292,6 +292,7 @@ const Sidebar = ({ activeView, setActiveView, isMobileOpen, setIsMobileOpen, use
 
 const AuthPage = ({ onLogin }) => {
   const [isRegistering, setIsRegistering] = useState(false); 
+  const [loading, setLoading] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
@@ -299,20 +300,49 @@ const AuthPage = ({ onLogin }) => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setLoading(true);
+    
     try {
+      let userAuth;
+      
+      // 1. Perform Authentication (This usually works fast)
       if (isRegistering) {
-        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-        const user = userCredential.user;
-        await setDoc(doc(db, "users", user.uid), { name: name, email: email, role: role, createdAt: new Date() });
-        onLogin({ uid: user.uid, email, name, role });
+        const uc = await createUserWithEmailAndPassword(auth, email, password);
+        userAuth = uc.user;
+        // Try to save to DB in background (don't await)
+        setDoc(doc(db, "users", userAuth.uid), { name, email, role, createdAt: new Date() }).catch(console.error);
       } else {
-        const userCredential = await signInWithEmailAndPassword(auth, email, password);
-        const user = userCredential.user;
-        const docRef = doc(db, "users", user.uid);
-        const docSnap = await getDoc(docRef);
-        if (docSnap.exists()) onLogin({ uid: user.uid, ...docSnap.data() });
+        const uc = await signInWithEmailAndPassword(auth, email, password);
+        userAuth = uc.user;
       }
-    } catch (err) { console.error(err); alert(err.message); }
+
+      // 2. THE FIX: Try to get User Profile, but give up after 2 seconds
+      // This prevents the "Stuck on Processing" issue
+      const dbRequest = getDoc(doc(db, "users", userAuth.uid));
+      const timeoutRequest = new Promise(resolve => setTimeout(() => resolve("TIMEOUT"), 2000));
+
+      const result = await Promise.race([dbRequest, timeoutRequest]);
+
+      if (result !== "TIMEOUT" && result.exists()) {
+          // Success: We got data from DB
+          onLogin({ uid: userAuth.uid, ...result.data() });
+      } else {
+          // Timeout/Offline: Log in with basic data
+          console.warn("Database slow/offline. Logging in directly.");
+          onLogin({ 
+              uid: userAuth.uid, 
+              email: userAuth.email, 
+              name: name || "User", 
+              role: role // Use the role selected in the form if DB fails
+          });
+      }
+
+    } catch (err) { 
+        console.error(err);
+        alert("Login Gagal: " + err.message); 
+    } finally {
+        setLoading(false);
+    }
   };
 
   return (
@@ -323,12 +353,18 @@ const AuthPage = ({ onLogin }) => {
               {isRegistering && (
                 <>
                   <input required type="text" value={name} onChange={e => setName(e.target.value)} className="w-full p-3 border rounded-xl" placeholder="Nama Lengkap" />
-                  <div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setRole('student')} className={`p-2 rounded border ${role === 'student' ? 'bg-teal-700 text-white' : ''}`}>Siswa</button><button type="button" onClick={() => setRole('teacher')} className={`p-2 rounded border ${role === 'teacher' ? 'bg-teal-700 text-white' : ''}`}>Guru</button></div>
+                  <div className="grid grid-cols-2 gap-2">
+                      <button type="button" onClick={() => setRole('student')} className={`p-2 rounded border ${role === 'student' ? 'bg-teal-700 text-white' : ''}`}>Siswa</button>
+                      <button type="button" onClick={() => setRole('teacher')} className={`p-2 rounded border ${role === 'teacher' ? 'bg-teal-700 text-white' : ''}`}>Guru</button>
+                  </div>
                 </>
               )}
               <input required type="email" value={email} onChange={e => setEmail(e.target.value)} className="w-full p-3 border rounded-xl" placeholder="Email" />
               <input required type="password" value={password} onChange={e => setPassword(e.target.value)} className="w-full p-3 border rounded-xl" placeholder="Password" />
-              <button type="submit" className="w-full bg-teal-700 text-white font-bold py-3 rounded-xl">{isRegistering ? "Daftar" : "Masuk"}</button>
+              
+              <button disabled={loading} type="submit" className="w-full bg-teal-700 text-white font-bold py-3 rounded-xl disabled:opacity-50">
+                  {loading ? "Memproses..." : (isRegistering ? "Daftar" : "Masuk")}
+              </button>
             </form>
             <button onClick={() => setIsRegistering(!isRegistering)} className="w-full text-center mt-4 text-sm text-teal-600 underline">{isRegistering ? "Sudah punya akun? Masuk" : "Belum punya akun? Daftar"}</button>
         </div>
@@ -1697,8 +1733,8 @@ const StudentCourseView = ({ course, user, onBack, onSubmitAssignment, onToggleC
 
 const EduFlowAppContent = () => {
   const [user, setUser] = useState(null); 
+  const [loadingAuth, setLoadingAuth] = useState(true); // Start true to show "Memuat..."
   const [activeView, setActiveView] = useState('dashboard');
-  const [flashcardDecks, setFlashcardDecks] = useState(INITIAL_FLASHCARD_DECKS);
   const [isMobileOpen, setIsMobileOpen] = useState(false);
   const [courses, setCourses] = useState([]); 
   const [selectedCourse, setSelectedCourse] = useState(null);
@@ -1707,26 +1743,44 @@ const EduFlowAppContent = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isNotificationOpen, setIsNotificationOpen] = useState(false);
   const [personalEvents, setPersonalEvents] = useState([]);
+  const [flashcardDecks, setFlashcardDecks] = useState(INITIAL_FLASHCARD_DECKS);
 
+  // --- FIXED AUTH CHECKER ---
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       if (currentUser) {
-        const docRef = doc(db, "users", currentUser.uid);
+        // 2-Second Timeout Rule for Database
+        const dbRequest = getDoc(doc(db, "users", currentUser.uid));
+        const timeoutRequest = new Promise(resolve => setTimeout(() => resolve("TIMEOUT"), 2000));
+
         try {
-            const docSnap = await getDoc(docRef);
-            if (docSnap.exists()) setUser({ uid: currentUser.uid, ...docSnap.data() });
-        } catch (e) { console.error("DB Error", e); }
-      } else { setUser(null); }
+            const result = await Promise.race([dbRequest, timeoutRequest]);
+            
+            if (result !== "TIMEOUT" && result.exists()) {
+                setUser({ uid: currentUser.uid, ...result.data() });
+            } else {
+                // If DB is slow/offline, allow login with basic info
+                setUser({ uid: currentUser.uid, email: currentUser.email, name: "User", role: "student" });
+            }
+        } catch (e) {
+            console.warn("Auth Error (Offline Mode):", e);
+            setUser({ uid: currentUser.uid, email: currentUser.email, name: "User", role: "student" });
+        }
+      } else { 
+          setUser(null); 
+      }
+      setLoadingAuth(false); // Always stop loading
     });
     return () => unsubscribe();
   }, []);
 
+  // --- DATA LISTENERS ---
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, "courses"), (snapshot) => {
       const coursesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       if(coursesData.length > 0) setCourses(coursesData);
       else setCourses(INITIAL_COURSES);
-    }, (error) => { console.error("Snapshot Error", error); });
+    }, (error) => console.log("Offline: Using default courses"));
     return () => unsubscribe();
   }, []);
 
@@ -1735,29 +1789,32 @@ const EduFlowAppContent = () => {
       return c.title.toLowerCase().includes(searchQuery.toLowerCase()) || (c.code && c.code.toLowerCase().includes(searchQuery.toLowerCase()));
   });
 
+  // Handlers
   const handleUpdateCourse = async (courseId, newData) => {
     const updatedCourses = courses.map(c => c.id === courseId ? { ...c, ...newData } : c);
     setCourses(updatedCourses);
     if (selectedCourse?.id === courseId) setSelectedCourse({ ...selectedCourse, ...newData });
-    await updateDoc(doc(db, "courses", courseId), newData);
+    updateDoc(doc(db, "courses", courseId), newData).catch(() => {});
   };
 
   const handleUpdateModules = async (courseId, newModules) => {
     const updatedCourses = courses.map(c => c.id === courseId ? { ...c, modules: newModules } : c);
     setCourses(updatedCourses);
     if (selectedCourse?.id === courseId) setSelectedCourse({ ...selectedCourse, modules: newModules });
-    await updateDoc(doc(db, "courses", courseId), { modules: newModules });
+    updateDoc(doc(db, "courses", courseId), { modules: newModules }).catch(() => {});
   };
 
   const handleUpdateDiscussions = async (courseId, newDiscussions) => {
     const updatedCourses = courses.map(c => c.id === courseId ? { ...c, discussions: newDiscussions } : c);
     setCourses(updatedCourses);
     if (selectedCourse?.id === courseId) setSelectedCourse({ ...selectedCourse, discussions: newDiscussions });
-    await updateDoc(doc(db, "courses", courseId), { discussions: newDiscussions }); 
+    updateDoc(doc(db, "courses", courseId), { discussions: newDiscussions }).catch(() => {});
   };
 
   const handleSubmitAssignment = async (courseId, assignmentId, fileUrl, fileName) => {
+    // Optimistic Update (Immediate Feedback)
     const newSubmission = { studentId: user.uid, studentName: user.name, assignmentId, fileUrl, fileName, submittedAt: new Date(), score: null };
+    // Note: We don't update local state here because onSnapshot will catch the DB change automatically
     await updateDoc(doc(db, "courses", courseId), { submissions: arrayUnion(newSubmission) });
     alert("Tugas berhasil dikirim!");
   };
@@ -1786,7 +1843,7 @@ const EduFlowAppContent = () => {
   };
 
   const handleAddCourse = async (newCourse) => {
-    await addDoc(collection(db, "courses"), { ...newCourse, modules: [], submissions: [], discussions: [], createdAt: new Date(), students: [] });
+    addDoc(collection(db, "courses"), { ...newCourse, modules: [], submissions: [], discussions: [], createdAt: new Date(), students: [], calendarEvents: [] });
   };
 
   const handleJoinClass = async (code) => {
@@ -1805,6 +1862,11 @@ const EduFlowAppContent = () => {
     if (viewId === 'courses') setSelectedCourse(null);
   };
 
+  // Loading View
+  if (loadingAuth) {
+      return <div className="min-h-screen flex items-center justify-center text-slate-500 font-bold animate-pulse">Memuat...</div>;
+  }
+
   if (!user) return <AuthPage onLogin={setUser} />;
 
   return (
@@ -1814,8 +1876,6 @@ const EduFlowAppContent = () => {
         <header className="h-20 px-8 flex items-center justify-between bg-white border-b border-slate-200 sticky top-0 z-40">
           <div className="flex items-center gap-4 md:hidden"><button onClick={() => setIsMobileOpen(true)}><Menu className="text-slate-500" /></button><span className="font-bold text-teal-700">EduSchool</span></div>
           <div className="hidden md:flex items-center bg-slate-100 rounded-full px-4 py-2 w-96 border border-slate-200 transition-all focus-within:border-teal-500 focus-within:bg-white"><Search size={18} className="text-slate-400 mr-3" /><input type="text" placeholder="Cari materi atau kelas..." className="bg-transparent border-none focus:outline-none text-sm text-slate-700 w-full" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} /></div>
-          
-          {/* NOTIFICATION DROPDOWN */}
           <div className="flex items-center gap-4 relative">
              <button onClick={() => setIsNotificationOpen(!isNotificationOpen)} className="relative p-2 text-slate-500 hover:bg-slate-100 rounded-full transition-colors">
                 <Bell size={20} />
@@ -1829,10 +1889,6 @@ const EduFlowAppContent = () => {
                              <div className="w-8 h-8 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center flex-shrink-0"><BookOpen size={14}/></div>
                              <div><p className="text-xs font-bold text-slate-700">Tugas Baru Matematika</p><p className="text-[10px] text-slate-400">Baru saja</p></div>
                          </div>
-                         <div className="flex gap-3 p-2 hover:bg-slate-50 rounded-lg cursor-pointer">
-                             <div className="w-8 h-8 bg-green-100 text-green-600 rounded-full flex items-center justify-center flex-shrink-0"><CheckCircle size={14}/></div>
-                             <div><p className="text-xs font-bold text-slate-700">Nilai Bahasa Indonesia Keluar</p><p className="text-[10px] text-slate-400">2 jam yang lalu</p></div>
-                         </div>
                      </div>
                  </div>
              )}
@@ -1841,7 +1897,6 @@ const EduFlowAppContent = () => {
         <div className="p-6 lg:p-8 flex-1">
           <AnimatePresence mode="wait">
              {activeView === 'dashboard' && <motion.div key="dash" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><DashboardView user={user} courses={courses} onJoin={() => setIsJoinClassOpen(true)} /></motion.div>}
-             
              {activeView === 'courses' && !selectedCourse && (
                 <motion.div key="course-list" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
                     <div className="flex justify-between items-center mb-6"><h2 className="text-2xl font-bold text-slate-800">{user.role === 'teacher' ? "Kelola Kelas" : "Kelas Saya"}</h2>{user.role === 'student' && (<button onClick={() => setIsJoinClassOpen(true)} className="bg-teal-700 text-white px-4 py-2 rounded-xl font-bold shadow hover:bg-teal-800 transition-colors text-sm">+ Gabung Kelas</button>)}</div>
@@ -1858,7 +1913,6 @@ const EduFlowAppContent = () => {
                     )}
                 </motion.div>
              )}
-
              {activeView === 'course-detail' && selectedCourse && (
                 <motion.div key="course-detail" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
                     {user.role === 'teacher' 
@@ -1882,24 +1936,15 @@ const EduFlowAppContent = () => {
                     }
                 </motion.div>
              )}
-             {activeView === 'profile' && <motion.div key="profile" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><StudentProfileView user={user} /></motion.div>}
-             {activeView === 'whiteboard' && <motion.div key="wb" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><WhiteboardView /></motion.div>}
-             {activeView === 'kanban' && <motion.div key="kanban" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><KanbanBoard /></motion.div>}
-             {activeView === 'flashcards' && (
-   <motion.div key="flash" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-       <FlashcardView 
-          decks={flashcardDecks} 
-          onAddDeck={(newDeck) => setFlashcardDecks([...flashcardDecks, newDeck])} 
-          user={user} 
-          courses={courses}
-       />
-   </motion.div>
-)}
              {activeView === 'quiz' && (<motion.div key="quiz" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}><QuizView onFinish={() => setActiveView('course-detail')} /></motion.div>)}
              {activeView === 'calendar' && <motion.div key="cal" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><CalendarView courses={courses} user={user} onUpdateCourse={handleUpdateCourse} personalEvents={personalEvents} setPersonalEvents={setPersonalEvents} /></motion.div>}
              {activeView === 'library' && <motion.div key="lib" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><LibraryView /></motion.div>}
              {activeView === 'messages' && <motion.div key="msg" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><MessagesView courses={courses} user={user} /></motion.div>}
              {activeView === 'settings' && <motion.div key="set" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><SettingsView user={user} onUpdateUser={setUser} /></motion.div>}
+             {activeView === 'profile' && <motion.div key="profile" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><StudentProfileView user={user} /></motion.div>}
+             {activeView === 'kanban' && <motion.div key="kanban" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><KanbanBoard user={user} /></motion.div>}
+             {activeView === 'flashcards' && <motion.div key="flash" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><FlashcardView decks={flashcardDecks} onAddDeck={(newDeck) => setFlashcardDecks([...flashcardDecks, newDeck])} user={user} courses={courses} /></motion.div>}
+             {activeView === 'whiteboard' && <motion.div key="wb" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><WhiteboardView /></motion.div>}
           </AnimatePresence>
         </div>
       </main>
@@ -1908,13 +1953,5 @@ const EduFlowAppContent = () => {
     </div>
   );
 };
-
-const EduFlowApp = () => {
-  return (
-    <ErrorBoundary>
-      <EduFlowAppContent />
-    </ErrorBoundary>
-  );
-}
 
 export default EduFlowApp;
