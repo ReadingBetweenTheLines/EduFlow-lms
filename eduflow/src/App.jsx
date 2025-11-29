@@ -311,42 +311,35 @@ const AuthPage = ({ onLogin }) => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
-    
     try {
-      let userAuth;
-      
-      // 1. Authenticate
       if (isRegistering) {
+        // 1. Register
         const uc = await createUserWithEmailAndPassword(auth, email, password);
-        userAuth = uc.user;
-        // Save to DB without waiting (prevents freezing)
-        setDoc(doc(db, "users", userAuth.uid), { name, email, role, createdAt: new Date() }).catch(() => {});
+        const userData = { name, email, role, createdAt: new Date() };
+        
+        // FORCE WAIT: Wait for DB to actually save before continuing
+        await setDoc(doc(db, "users", uc.user.uid), userData);
+        
+        onLogin({ uid: uc.user.uid, ...userData });
       } else {
+        // 2. Login
         const uc = await signInWithEmailAndPassword(auth, email, password);
-        userAuth = uc.user;
+        
+        // FORCE WAIT: Get the REAL data. Do not use a timeout/fallback.
+        const docSnap = await getDoc(doc(db, "users", uc.user.uid));
+        
+        if (docSnap.exists()) {
+             onLogin({ uid: uc.user.uid, ...docSnap.data() });
+        } else {
+             // Only if data is TRULY missing (rare error), use basic info
+             // But don't default to student unless necessary
+             alert("Data pengguna tidak ditemukan di database. Menggunakan info login dasar.");
+             onLogin({ uid: uc.user.uid, email: uc.user.email, name: "User", role: "student" });
+        }
       }
-
-      // 2. THE FIX: 2-Second Timeout Rule
-      // If DB doesn't answer in 2 seconds, log in anyway.
-      const dbTask = getDoc(doc(db, "users", userAuth.uid));
-      const timeoutTask = new Promise(resolve => setTimeout(() => resolve("TIMEOUT"), 2000));
-
-      const result = await Promise.race([dbTask, timeoutTask]);
-
-      if (result !== "TIMEOUT" && result.exists()) {
-          onLogin({ uid: userAuth.uid, ...result.data() });
-      } else {
-          console.warn("Offline mode active");
-          onLogin({ 
-              uid: userAuth.uid, 
-              email: userAuth.email, 
-              name: name || "User", 
-              role: role 
-          });
-      }
-
     } catch (err) { 
-        alert("Gagal: " + err.message); 
+        console.error(err);
+        alert("Login Gagal: " + err.message); 
     } finally {
         setLoading(false);
     }
@@ -1755,22 +1748,27 @@ const EduFlowAppContent = () => {
   const [flashcardDecks, setFlashcardDecks] = useState(INITIAL_FLASHCARD_DECKS);
 
   // 1. ROBUST AUTH CHECK
+  // --- AUTH CHECKER (FIXED) ---
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       if (currentUser) {
-        // Race Database vs Timeout
-        const dbTask = getDoc(doc(db, "users", currentUser.uid));
-        const timer = new Promise(r => setTimeout(() => r("TIMEOUT"), 2000));
-        
         try {
-            const res = await Promise.race([dbTask, timer]);
-            if (res !== "TIMEOUT" && res.exists()) {
-                setUser({ uid: currentUser.uid, ...res.data() });
+            // FORCE WAIT: Get the real profile from Firestore
+            const docRef = doc(db, "users", currentUser.uid);
+            const docSnap = await getDoc(docRef);
+            
+            if (docSnap.exists()) {
+                setUser({ uid: currentUser.uid, ...docSnap.data() });
             } else {
+                // Document doesn't exist? Keep them logged in but warn them
+                console.warn("Profile not found in DB");
                 setUser({ uid: currentUser.uid, email: currentUser.email, name: "User", role: "student" });
             }
         } catch (e) {
-            setUser({ uid: currentUser.uid, email: currentUser.email, name: "User", role: "student" });
+            console.error("Connection Error", e);
+            // If offline, we might want to kick them to login or show a retry
+            // For now, let's keep them logged out if we can't verify role
+            setUser(null);
         }
       } else { 
           setUser(null); 
