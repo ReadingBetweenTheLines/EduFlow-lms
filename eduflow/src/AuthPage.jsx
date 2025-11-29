@@ -3,18 +3,18 @@ import React, { useState } from 'react';
 import { auth, db } from './firebase';
 import { createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
-import { User, Mail, Lock, Loader2, LogIn, UserPlus, GraduationCap } from 'lucide-react';
+import { User, Mail, Lock, Loader2, LogIn, UserPlus, GraduationCap, AlertCircle } from 'lucide-react';
 
 const AuthPage = ({ onLogin }) => {
   const [isRegistering, setIsRegistering] = useState(false); 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   
-  // Form Inputs
+  // Form State
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
-  const [role, setRole] = useState('student'); // Default role
+  const [role, setRole] = useState('student');
 
   // --- 1. REGISTER LOGIC ---
   const handleRegister = async (e) => {
@@ -113,8 +113,8 @@ const AuthPage = ({ onLogin }) => {
             </div>
 
             {error && (
-                <div className="mb-6 p-4 bg-red-50 border-l-4 border-red-500 text-red-700 text-sm rounded-r">
-                    {error}
+                <div className="mb-6 p-4 bg-red-50 border-l-4 border-red-500 text-red-700 text-sm rounded-r flex items-center gap-2">
+                    <AlertCircle size={16}/> {error}
                 </div>
             )}
 
