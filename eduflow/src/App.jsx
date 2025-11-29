@@ -27,6 +27,46 @@ const fileToBase64 = (file) => {
   });
 };
 
+// --- PASTE THIS AT THE TOP (Right after imports and helpers) ---
+
+const INITIAL_FLASHCARD_DECKS = [
+    { 
+      id: 1, 
+      courseId: "demo-1", 
+      title: "Vocabulary TOEFL", 
+      subject: "Bahasa Inggris", 
+      color: "bg-purple-100 text-purple-600",
+      cards: [
+        { q: "Abundant", a: "Berlimpah / Banyak sekali" },
+        { q: "Benevolent", a: "Baik hati / Dermawan" },
+        { q: "Candid", a: "Jujur / Terus terang" }
+      ]
+    },
+    { 
+      id: 2, 
+      courseId: "demo-1", 
+      title: "Rumus Fisika Dasar", 
+      subject: "Fisika", 
+      color: "bg-blue-100 text-blue-600",
+      cards: [
+        { q: "Rumus Gaya (F)", a: "F = m . a (Massa x Percepatan)" },
+        { q: "Energi Kinetik (Ek)", a: "Ek = 1/2 . m . v^2" },
+        { q: "Hukum Newton III", a: "Aksi = -Reaksi" }
+      ]
+    },
+    { 
+        id: 3, 
+        title: "Sejarah Indonesia", 
+        subject: "Sejarah", 
+        color: "bg-orange-100 text-orange-600",
+        cards: [
+          { q: "Tanggal Kemerdekaan", a: "17 Agustus 1945" },
+          { q: "Presiden Pertama", a: "Ir. Soekarno" },
+          { q: "Peristiwa Rengasdengklok", a: "Penculikan Soekarno-Hatta oleh golongan muda" }
+        ]
+      }
+];
+
 // Helper: Save to Local Storage (Prevents Database Crash)
 const saveFileLocally = (base64String) => {
     try {
