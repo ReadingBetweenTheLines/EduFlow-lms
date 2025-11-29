@@ -1661,11 +1661,15 @@ const StudentCourseView = ({ course, user, onBack, onSubmitAssignment, onToggleC
 };
 
 // --- 3. REPLACE EduFlowAppContent WITH THIS ---
+// --- 6. APP CORE (INSTANT LOAD VERSION) ---
 const EduFlowAppContent = () => {
-  const [user, setUser] = useState(null); 
-  const [loadingAuth, setLoadingAuth] = useState(true); // Add Loading
+  // 1. INITIALIZE FROM LOCAL STORAGE (Instant Load)
+  const [user, setUser] = useState(() => {
+      const saved = localStorage.getItem("eduflow_user");
+      return saved ? JSON.parse(saved) : null;
+  });
+
   const [activeView, setActiveView] = useState('dashboard');
-  const [isMobileOpen, setIsMobileOpen] = useState(false);
   const [courses, setCourses] = useState([]); 
   const [selectedCourse, setSelectedCourse] = useState(null);
   const [isCreateClassOpen, setIsCreateClassOpen] = useState(false); 
@@ -1673,83 +1677,70 @@ const EduFlowAppContent = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isNotificationOpen, setIsNotificationOpen] = useState(false);
   const [personalEvents, setPersonalEvents] = useState([]);
-  
-  // Use the constant we moved to the top
   const [flashcardDecks, setFlashcardDecks] = useState(INITIAL_FLASHCARD_DECKS);
+  const [isMobileOpen, setIsMobileOpen] = useState(false);
 
-  // 1. ROBUST AUTH CHECK
-  // --- AUTH CHECKER (FIXED) ---
-  // Inside EduFlowAppContent
-// --- AUTH CHECKER (In EduFlowAppContent) ---
+  // 2. BACKGROUND AUTH CHECK (Silent Sync)
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       if (currentUser) {
-        try {
-            // We fetch the data. If it fails, we catch the error.
+        // User is valid in Firebase. Check if we have their data in LocalStorage.
+        const localData = localStorage.getItem("eduflow_user");
+        
+        if (!localData) {
+            // If missing locally, fetch from DB
             const docRef = doc(db, "users", currentUser.uid);
             const docSnap = await getDoc(docRef);
-            
             if (docSnap.exists()) {
-                setUser({ uid: currentUser.uid, ...docSnap.data() });
-            } else {
-                // Fallback: This user exists in Auth but not DB. 
-                // Don't crash. Just use basic info.
-                setUser({ uid: currentUser.uid, email: currentUser.email, name: "User", role: "student" });
+                const newData = { uid: currentUser.uid, ...docSnap.data() };
+                setUser(newData);
+                localStorage.setItem("eduflow_user", JSON.stringify(newData));
             }
-        } catch (e) {
-            console.error("Connection Error", e);
-            // Even if DB fails, we let them in with basic access
-            setUser({ uid: currentUser.uid, email: currentUser.email, name: "User", role: "student" });
         }
-      } else { 
-          setUser(null); 
+      } else {
+        // User is logged out in Firebase -> Clear Local Data
+        setUser(null);
+        localStorage.removeItem("eduflow_user");
       }
-      setLoadingAuth(false);
     });
     return () => unsubscribe();
   }, []);
 
-  // 2. ROBUST DATA LOAD
+  // 3. DATA SYNC
   useEffect(() => {
+    if (!user) return;
     const unsubscribe = onSnapshot(collection(db, "courses"), (snapshot) => {
       const coursesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      // If DB empty or offline, use Initial Data to prevent crash
       setCourses(coursesData.length > 0 ? coursesData : INITIAL_COURSES);
-    }, (error) => console.log("Offline mode"));
+    }, (error) => console.log("Offline mode: using cached courses"));
     return () => unsubscribe();
-  }, []);
+  }, [user]);
 
-  // ... (Keep your existing handlers here: handleUpdateCourse, handleJoin, etc.)
-  // NOTE: Ensure these handlers are defined before the return statement.
-  // If you deleted them, copy them from the previous response I sent.
-  
-  // --- PASTE HANDLERS HERE IF MISSING ---
+  // Handlers
+  const handleLogout = async () => {
+      await signOut(auth);
+      localStorage.removeItem("eduflow_user"); // Clear cache immediately
+      setUser(null);
+  };
+
   const handleUpdateCourse = async (id, data) => updateDoc(doc(db,"courses",id), data).catch(()=>{});
   const handleUpdateModules = async (id, modules) => updateDoc(doc(db,"courses",id), { modules }).catch(()=>{});
   const handleUpdateDiscussions = async (id, disc) => updateDoc(doc(db,"courses",id), { discussions: disc }).catch(()=>{});
   const handleSubmitAssignment = async (cId, aId, url, name) => { await updateDoc(doc(db,"courses",cId), { submissions: arrayUnion({ studentId: user.uid, studentName: user.name, assignmentId: aId, fileUrl: url, fileName: name, submittedAt: new Date() }) }); alert("Terkirim!"); };
-  const handleGradeSubmission = async (cId, sub, score) => { /* Add logic if needed */ };
-  const handleToggleComplete = async (cId, iId, val) => { /* Add logic if needed */ };
+  const handleGradeSubmission = async (cId, sub, score) => { /* Logic here */ };
+  const handleToggleComplete = async (cId, iId, val) => { /* Logic here */ };
   const handleAddCourse = async (c) => addDoc(collection(db,"courses"), { ...c, modules: [], submissions: [], discussions: [], createdAt: new Date(), students: [], calendarEvents: [] });
-  const handleJoinClass = async (code) => {
-    const course = courses.find(c => c.code === code);
-    if (course) { 
-        const studentData = { uid: user.uid, name: user.name };
-        await updateDoc(doc(db, "courses", course.id), { students: arrayUnion(studentData) });
-        alert(`Berhasil bergabung ke kelas: ${course.title}`); 
-        return true; 
-    }
-    alert("Kode kelas tidak ditemukan.");
-    return false;
-  };  const handleSidebarNavigation = (id) => { setActiveView(id); if(id==='courses') setSelectedCourse(null); };
+  const handleJoin = async (code) => { const c = courses.find(x=>x.code===code); if(c) await updateDoc(doc(db,"courses",c.id), { students: arrayUnion({uid:user.uid, name:user.name})}); };
+  const handleSidebarNavigation = (id) => { setActiveView(id); if(id==='courses') setSelectedCourse(null); };
 
-  if (loadingAuth) return <div className="min-h-screen flex items-center justify-center text-slate-500 font-bold animate-pulse">Memuat...</div>;
-  if (!user) return <AuthPage onLogin={setUser} />;
+  // 4. RENDER (No "Loading..." check needed because 'user' is set from LocalStorage instantly)
+  if (!user) return <AuthPage onLogin={(u) => { setUser(u); localStorage.setItem("eduflow_user", JSON.stringify(u)); }} />;
 
   return (
       <div className="min-h-screen bg-slate-50 font-sans flex">
-          <Sidebar activeView={activeView} setActiveView={handleSidebarNavigation} user={user} onLogout={() => signOut(auth)} isMobileOpen={isMobileOpen} setIsMobileOpen={setIsMobileOpen} />
+          <Sidebar activeView={activeView} setActiveView={handleSidebarNavigation} user={user} onLogout={handleLogout} isMobileOpen={isMobileOpen} setIsMobileOpen={setIsMobileOpen} />
           <main className="flex-1 md:ml-64 p-8">
+             {/* Header */}
              <div className="flex justify-between items-center mb-8">
                  <div className="md:hidden"><Menu onClick={()=>setIsMobileOpen(true)}/></div>
                  <h1 className="text-2xl font-bold text-slate-800 capitalize">{activeView.replace('-',' ')}</h1>
@@ -1789,8 +1780,8 @@ const EduFlowAppContent = () => {
                  {activeView === 'whiteboard' && <WhiteboardView />}
                  {activeView === 'library' && <LibraryView />}
                  {activeView === 'messages' && <MessagesView courses={courses} user={user} />}
-                 {activeView === 'profile' && <StudentProfileView user={user} />}
                  {activeView === 'settings' && <SettingsView user={user} onUpdateUser={setUser} />}
+                 {activeView === 'profile' && <StudentProfileView user={user} />}
              </AnimatePresence>
           </main>
           <CreateClassModal isOpen={isCreateClassOpen} onClose={() => setIsCreateClassOpen(false)} onSave={handleAddCourse} />
