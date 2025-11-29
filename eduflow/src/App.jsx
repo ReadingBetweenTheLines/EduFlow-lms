@@ -1802,8 +1802,17 @@ const EduFlowAppContent = () => {
   const handleGradeSubmission = async (cId, sub, score) => { /* Add logic if needed */ };
   const handleToggleComplete = async (cId, iId, val) => { /* Add logic if needed */ };
   const handleAddCourse = async (c) => addDoc(collection(db,"courses"), { ...c, modules: [], submissions: [], discussions: [], createdAt: new Date(), students: [], calendarEvents: [] });
-  const handleJoin = async (code) => { const c = courses.find(x=>x.code===code); if(c) await updateDoc(doc(db,"courses",c.id), { students: arrayUnion({uid:user.uid, name:user.name})}); };
-  const handleSidebarNavigation = (id) => { setActiveView(id); if(id==='courses') setSelectedCourse(null); };
+  const handleJoinClass = async (code) => {
+    const course = courses.find(c => c.code === code);
+    if (course) { 
+        const studentData = { uid: user.uid, name: user.name };
+        await updateDoc(doc(db, "courses", course.id), { students: arrayUnion(studentData) });
+        alert(`Berhasil bergabung ke kelas: ${course.title}`); 
+        return true; 
+    }
+    alert("Kode kelas tidak ditemukan.");
+    return false;
+  };  const handleSidebarNavigation = (id) => { setActiveView(id); if(id==='courses') setSelectedCourse(null); };
 
   if (loadingAuth) return <div className="min-h-screen flex items-center justify-center text-slate-500 font-bold animate-pulse">Memuat...</div>;
   if (!user) return <AuthPage onLogin={setUser} />;
