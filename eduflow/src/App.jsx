@@ -1,3 +1,4 @@
+import AuthPage from './AuthPage';
 import React, { useState, useEffect, useRef } from 'react';
 // Firebase Imports (Ensure you have firebase.js set up)
 import { auth, db } from './firebase'; 
@@ -296,77 +297,6 @@ const Sidebar = ({ activeView, setActiveView, isMobileOpen, setIsMobileOpen, use
           <LogOut size={18} /> <span>Keluar</span>
         </button>
       </div>
-    </div>
-  );
-};
-
-const AuthPage = ({ onLogin }) => {
-  const [isRegistering, setIsRegistering] = useState(false); 
-  const [loading, setLoading] = useState(false);
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [name, setName] = useState('');
-  const [role, setRole] = useState('student');
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setLoading(true);
-    try {
-      if (isRegistering) {
-        // 1. Register
-        const uc = await createUserWithEmailAndPassword(auth, email, password);
-        const userData = { name, email, role, createdAt: new Date() };
-        
-        // FORCE WAIT: Wait for DB to actually save before continuing
-        await setDoc(doc(db, "users", uc.user.uid), userData);
-        
-        onLogin({ uid: uc.user.uid, ...userData });
-      } else {
-        // 2. Login
-        const uc = await signInWithEmailAndPassword(auth, email, password);
-        
-        // FORCE WAIT: Get the REAL data. Do not use a timeout/fallback.
-        const docSnap = await getDoc(doc(db, "users", uc.user.uid));
-        
-        if (docSnap.exists()) {
-             onLogin({ uid: uc.user.uid, ...docSnap.data() });
-        } else {
-             // Only if data is TRULY missing (rare error), use basic info
-             // But don't default to student unless necessary
-             alert("Data pengguna tidak ditemukan di database. Menggunakan info login dasar.");
-             onLogin({ uid: uc.user.uid, email: uc.user.email, name: "User", role: "student" });
-        }
-      }
-    } catch (err) { 
-        console.error(err);
-        alert("Login Gagal: " + err.message); 
-    } finally {
-        setLoading(false);
-    }
-  };
-
-  return (
-    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
-        <div className="bg-white w-full max-w-md p-8 rounded-3xl shadow-xl">
-            <h2 className="text-2xl font-bold mb-6 text-center">{isRegistering ? "Daftar Akun" : "Masuk Aplikasi"}</h2>
-            <form onSubmit={handleSubmit} className="space-y-4">
-              {isRegistering && (
-                <>
-                  <input required type="text" value={name} onChange={e => setName(e.target.value)} className="w-full p-3 border rounded-xl" placeholder="Nama Lengkap" />
-                  <div className="grid grid-cols-2 gap-2">
-                      <button type="button" onClick={() => setRole('student')} className={`p-2 rounded border ${role === 'student' ? 'bg-teal-700 text-white' : ''}`}>Siswa</button>
-                      <button type="button" onClick={() => setRole('teacher')} className={`p-2 rounded border ${role === 'teacher' ? 'bg-teal-700 text-white' : ''}`}>Guru</button>
-                  </div>
-                </>
-              )}
-              <input required type="email" value={email} onChange={e => setEmail(e.target.value)} className="w-full p-3 border rounded-xl" placeholder="Email" />
-              <input required type="password" value={password} onChange={e => setPassword(e.target.value)} className="w-full p-3 border rounded-xl" placeholder="Password" />
-              <button disabled={loading} type="submit" className="w-full bg-teal-700 text-white font-bold py-3 rounded-xl disabled:opacity-50">
-                  {loading ? "Memproses..." : (isRegistering ? "Daftar" : "Masuk")}
-              </button>
-            </form>
-            <button onClick={() => setIsRegistering(!isRegistering)} className="w-full text-center mt-4 text-sm text-teal-600 underline">{isRegistering ? "Sudah punya akun? Masuk" : "Belum punya akun? Daftar"}</button>
-        </div>
     </div>
   );
 };
