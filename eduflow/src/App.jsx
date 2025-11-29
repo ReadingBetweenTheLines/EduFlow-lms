@@ -15,19 +15,6 @@ import {
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts';
 import { motion, AnimatePresence } from 'framer-motion';
 
-// --- 1. PASTE THESE HELPERS AT THE TOP (After Imports) ---
-
-// Helper: Convert File to Text (Base64)
-const fileToBase64 = (file) => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = (error) => reject(error);
-  });
-};
-
-// --- PASTE THIS AT THE TOP (Right after imports and helpers) ---
 
 const INITIAL_FLASHCARD_DECKS = [
     { 
@@ -66,6 +53,19 @@ const INITIAL_FLASHCARD_DECKS = [
         ]
       }
 ];
+// --- 1. PASTE THESE HELPERS AT THE TOP (After Imports) ---
+
+// Helper: Convert File to Text (Base64)
+const fileToBase64 = (file) => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = (error) => reject(error);
+  });
+};
+
+// --- PASTE THIS AT THE TOP (Right after imports and helpers) ---
 
 // Helper: Save to Local Storage (Prevents Database Crash)
 const saveFileLocally = (base64String) => {
