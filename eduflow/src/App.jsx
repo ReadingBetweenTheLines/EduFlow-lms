@@ -15,6 +15,40 @@ import {
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts';
 import { motion, AnimatePresence } from 'framer-motion';
 
+// --- 1. PASTE THESE HELPERS AT THE TOP (After Imports) ---
+
+// Helper: Convert File to Text (Base64)
+const fileToBase64 = (file) => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = (error) => reject(error);
+  });
+};
+
+// Helper: Save to Local Storage (Prevents Database Crash)
+const saveFileLocally = (base64String) => {
+    try {
+        const uniqueKey = `file_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        localStorage.setItem(uniqueKey, base64String);
+        return `LOCAL:${uniqueKey}`; 
+    } catch (e) {
+        console.error("Storage full");
+        return null;
+    }
+};
+
+// Helper: Retrieve File
+const getFileFromStorage = (url) => {
+    if (!url) return "#";
+    if (url.startsWith('LOCAL:')) {
+        const key = url.split('LOCAL:')[1];
+        return localStorage.getItem(key) || '#';
+    }
+    return url;
+};
+
 // ==========================================
 // 1. UTILITIES & DATA
 // ==========================================
@@ -290,6 +324,7 @@ const Sidebar = ({ activeView, setActiveView, isMobileOpen, setIsMobileOpen, use
   );
 };
 
+// --- 2. REPLACE YOUR AuthPage WITH THIS ---
 const AuthPage = ({ onLogin }) => {
   const [isRegistering, setIsRegistering] = useState(false); 
   const [loading, setLoading] = useState(false);
@@ -305,41 +340,33 @@ const AuthPage = ({ onLogin }) => {
     try {
       let userAuth;
       
-      // 1. Perform Authentication (This usually works fast)
       if (isRegistering) {
+        // Register
         const uc = await createUserWithEmailAndPassword(auth, email, password);
         userAuth = uc.user;
-        // Try to save to DB in background (don't await)
-        setDoc(doc(db, "users", userAuth.uid), { name, email, role, createdAt: new Date() }).catch(console.error);
+        // Optimistic Save (Don't await)
+        setDoc(doc(db, "users", userAuth.uid), { name, email, role, createdAt: new Date() }).catch(e => console.warn("Offline save failed"));
       } else {
+        // Login
         const uc = await signInWithEmailAndPassword(auth, email, password);
         userAuth = uc.user;
       }
 
-      // 2. THE FIX: Try to get User Profile, but give up after 2 seconds
-      // This prevents the "Stuck on Processing" issue
-      const dbRequest = getDoc(doc(db, "users", userAuth.uid));
-      const timeoutRequest = new Promise(resolve => setTimeout(() => resolve("TIMEOUT"), 2000));
+      // TIMEOUT RACE: If DB takes > 2 seconds, skip it
+      const dbTask = getDoc(doc(db, "users", userAuth.uid));
+      const timeoutTask = new Promise(resolve => setTimeout(() => resolve("TIMEOUT"), 2000));
 
-      const result = await Promise.race([dbRequest, timeoutRequest]);
+      const result = await Promise.race([dbTask, timeoutTask]);
 
       if (result !== "TIMEOUT" && result.exists()) {
-          // Success: We got data from DB
           onLogin({ uid: userAuth.uid, ...result.data() });
       } else {
-          // Timeout/Offline: Log in with basic data
-          console.warn("Database slow/offline. Logging in directly.");
-          onLogin({ 
-              uid: userAuth.uid, 
-              email: userAuth.email, 
-              name: name || "User", 
-              role: role // Use the role selected in the form if DB fails
-          });
+          // Offline Fallback
+          onLogin({ uid: userAuth.uid, email: userAuth.email, name: name || "User", role: role });
       }
 
     } catch (err) { 
-        console.error(err);
-        alert("Login Gagal: " + err.message); 
+        alert("Gagal: " + err.message); 
     } finally {
         setLoading(false);
     }
@@ -361,7 +388,6 @@ const AuthPage = ({ onLogin }) => {
               )}
               <input required type="email" value={email} onChange={e => setEmail(e.target.value)} className="w-full p-3 border rounded-xl" placeholder="Email" />
               <input required type="password" value={password} onChange={e => setPassword(e.target.value)} className="w-full p-3 border rounded-xl" placeholder="Password" />
-              
               <button disabled={loading} type="submit" className="w-full bg-teal-700 text-white font-bold py-3 rounded-xl disabled:opacity-50">
                   {loading ? "Memproses..." : (isRegistering ? "Daftar" : "Masuk")}
               </button>
@@ -1731,9 +1757,10 @@ const StudentCourseView = ({ course, user, onBack, onSubmitAssignment, onToggleC
   );
 };
 
+// --- 3. REPLACE EduFlowAppContent WITH THIS ---
 const EduFlowAppContent = () => {
   const [user, setUser] = useState(null); 
-  const [loadingAuth, setLoadingAuth] = useState(true); // Start true to show "Memuat..."
+  const [loadingAuth, setLoadingAuth] = useState(true); // Loading State
   const [activeView, setActiveView] = useState('dashboard');
   const [isMobileOpen, setIsMobileOpen] = useState(false);
   const [courses, setCourses] = useState([]); 
@@ -1743,214 +1770,107 @@ const EduFlowAppContent = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isNotificationOpen, setIsNotificationOpen] = useState(false);
   const [personalEvents, setPersonalEvents] = useState([]);
-  const [flashcardDecks, setFlashcardDecks] = useState(INITIAL_FLASHCARD_DECKS);
+  
+  // Use your existing FLASHCARD constant or default to empty array
+  const [flashcardDecks, setFlashcardDecks] = useState(typeof INITIAL_FLASHCARD_DECKS !== 'undefined' ? INITIAL_FLASHCARD_DECKS : []);
 
-  // --- FIXED AUTH CHECKER ---
+  // Auth Check with Timeout
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       if (currentUser) {
-        // 2-Second Timeout Rule for Database
-        const dbRequest = getDoc(doc(db, "users", currentUser.uid));
-        const timeoutRequest = new Promise(resolve => setTimeout(() => resolve("TIMEOUT"), 2000));
-
+        const dbTask = getDoc(doc(db, "users", currentUser.uid));
+        const timer = new Promise(resolve => setTimeout(() => resolve("TIMEOUT"), 2000));
+        
         try {
-            const result = await Promise.race([dbRequest, timeoutRequest]);
-            
-            if (result !== "TIMEOUT" && result.exists()) {
-                setUser({ uid: currentUser.uid, ...result.data() });
+            const res = await Promise.race([dbTask, timer]);
+            if (res !== "TIMEOUT" && res.exists()) {
+                setUser({ uid: currentUser.uid, ...res.data() });
             } else {
-                // If DB is slow/offline, allow login with basic info
                 setUser({ uid: currentUser.uid, email: currentUser.email, name: "User", role: "student" });
             }
         } catch (e) {
-            console.warn("Auth Error (Offline Mode):", e);
             setUser({ uid: currentUser.uid, email: currentUser.email, name: "User", role: "student" });
         }
       } else { 
           setUser(null); 
       }
-      setLoadingAuth(false); // Always stop loading
+      setLoadingAuth(false);
     });
     return () => unsubscribe();
   }, []);
 
-  // --- DATA LISTENERS ---
+  // Data Listener
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, "courses"), (snapshot) => {
       const coursesData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      if(coursesData.length > 0) setCourses(coursesData);
-      else setCourses(INITIAL_COURSES);
-    }, (error) => console.log("Offline: Using default courses"));
+      // Fallback to initial if DB empty
+      setCourses(coursesData.length > 0 ? coursesData : (typeof INITIAL_COURSES !== 'undefined' ? INITIAL_COURSES : []));
+    }, (error) => console.log("Offline mode"));
     return () => unsubscribe();
   }, []);
 
-  const filteredCourses = courses.filter(c => {
-      if (!c || !c.title) return false;
-      return c.title.toLowerCase().includes(searchQuery.toLowerCase()) || (c.code && c.code.toLowerCase().includes(searchQuery.toLowerCase()));
-  });
-
-  // Handlers
-  const handleUpdateCourse = async (courseId, newData) => {
-    const updatedCourses = courses.map(c => c.id === courseId ? { ...c, ...newData } : c);
-    setCourses(updatedCourses);
-    if (selectedCourse?.id === courseId) setSelectedCourse({ ...selectedCourse, ...newData });
-    updateDoc(doc(db, "courses", courseId), newData).catch(() => {});
-  };
-
-  const handleUpdateModules = async (courseId, newModules) => {
-    const updatedCourses = courses.map(c => c.id === courseId ? { ...c, modules: newModules } : c);
-    setCourses(updatedCourses);
-    if (selectedCourse?.id === courseId) setSelectedCourse({ ...selectedCourse, modules: newModules });
-    updateDoc(doc(db, "courses", courseId), { modules: newModules }).catch(() => {});
-  };
-
-  const handleUpdateDiscussions = async (courseId, newDiscussions) => {
-    const updatedCourses = courses.map(c => c.id === courseId ? { ...c, discussions: newDiscussions } : c);
-    setCourses(updatedCourses);
-    if (selectedCourse?.id === courseId) setSelectedCourse({ ...selectedCourse, discussions: newDiscussions });
-    updateDoc(doc(db, "courses", courseId), { discussions: newDiscussions }).catch(() => {});
-  };
-
-  const handleSubmitAssignment = async (courseId, assignmentId, fileUrl, fileName) => {
-    // Optimistic Update (Immediate Feedback)
-    const newSubmission = { studentId: user.uid, studentName: user.name, assignmentId, fileUrl, fileName, submittedAt: new Date(), score: null };
-    // Note: We don't update local state here because onSnapshot will catch the DB change automatically
-    await updateDoc(doc(db, "courses", courseId), { submissions: arrayUnion(newSubmission) });
-    alert("Tugas berhasil dikirim!");
-  };
-
-  const handleGradeSubmission = async (courseId, submission, newScore) => {
-    const courseRef = doc(db, "courses", courseId);
-    const courseDoc = await getDoc(courseRef);
-    const currentSubmissions = courseDoc.data().submissions || [];
-    const updatedSubmissions = currentSubmissions.map(sub => {
-        if(sub.studentId === submission.studentId && sub.assignmentId === submission.assignmentId) {
-            return { ...sub, score: newScore };
-        }
-        return sub;
-    });
-    await updateDoc(courseRef, { submissions: updatedSubmissions });
-  };
-
-  const handleToggleComplete = async (courseId, itemId, isCompleted) => {
-    const course = courses.find(c => c.id === courseId);
-    const updatedModules = course.modules.map(mod => ({
-        ...mod,
-        items: mod.items.map(item => item.id === itemId ? { ...item, completed: isCompleted } : item)
-    }));
-    setCourses(courses.map(c => c.id === courseId ? { ...c, modules: updatedModules } : c));
-    await updateDoc(doc(db, "courses", courseId), { modules: updatedModules });
-  };
-
-  const handleAddCourse = async (newCourse) => {
-    addDoc(collection(db, "courses"), { ...newCourse, modules: [], submissions: [], discussions: [], createdAt: new Date(), students: [], calendarEvents: [] });
-  };
-
-  const handleJoinClass = async (code) => {
-    const course = courses.find(c => c.code === code);
-    if (course) { 
-        const studentData = { uid: user.uid, name: user.name };
-        await updateDoc(doc(db, "courses", course.id), { students: arrayUnion(studentData) });
-        alert(`Berhasil bergabung ke kelas: ${course.title}`); 
-        return true; 
-    }
-    return false;
-  };
-
-  const handleSidebarNavigation = (viewId) => {
-    setActiveView(viewId);
-    if (viewId === 'courses') setSelectedCourse(null);
-  };
-
-  // Loading View
-  if (loadingAuth) {
-      return <div className="min-h-screen flex items-center justify-center text-slate-500 font-bold animate-pulse">Memuat...</div>;
-  }
-
+  const handleUpdateCourse = async (id, data) => updateDoc(doc(db,"courses",id), data).catch(()=>{});
+  const handleUpdateModules = async (id, modules) => updateDoc(doc(db,"courses",id), { modules }).catch(()=>{});
+  const handleSubmitAssignment = async (cId, aId, url, name) => { await updateDoc(doc(db,"courses",cId), { submissions: arrayUnion({ studentId: user.uid, studentName: user.name, assignmentId: aId, fileUrl: url, fileName: name, submittedAt: new Date() }) }); alert("Terkirim!"); };
+  const handleAddCourse = async (c) => addDoc(collection(db,"courses"), { ...c, modules: [], submissions: [], students: [], calendarEvents: [] });
+  const handleJoin = async (code) => { const c = courses.find(x=>x.code===code); if(c) await updateDoc(doc(db,"courses",c.id), { students: arrayUnion({uid:user.uid, name:user.name})}); };
+  
+  if (loadingAuth) return <div className="min-h-screen flex items-center justify-center text-slate-500 font-bold animate-pulse">Memuat Data...</div>;
   if (!user) return <AuthPage onLogin={setUser} />;
 
   return (
-    <div className="min-h-screen bg-slate-50 font-sans text-slate-800">
-      <Sidebar activeView={activeView} setActiveView={handleSidebarNavigation} isMobileOpen={isMobileOpen} setIsMobileOpen={setIsMobileOpen} user={user} onLogout={() => signOut(auth)} />
-      <main className="md:ml-64 min-h-screen flex flex-col">
-        <header className="h-20 px-8 flex items-center justify-between bg-white border-b border-slate-200 sticky top-0 z-40">
-          <div className="flex items-center gap-4 md:hidden"><button onClick={() => setIsMobileOpen(true)}><Menu className="text-slate-500" /></button><span className="font-bold text-teal-700">EduSchool</span></div>
-          <div className="hidden md:flex items-center bg-slate-100 rounded-full px-4 py-2 w-96 border border-slate-200 transition-all focus-within:border-teal-500 focus-within:bg-white"><Search size={18} className="text-slate-400 mr-3" /><input type="text" placeholder="Cari materi atau kelas..." className="bg-transparent border-none focus:outline-none text-sm text-slate-700 w-full" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} /></div>
-          <div className="flex items-center gap-4 relative">
-             <button onClick={() => setIsNotificationOpen(!isNotificationOpen)} className="relative p-2 text-slate-500 hover:bg-slate-100 rounded-full transition-colors">
-                <Bell size={20} />
-                <span className="absolute top-2 right-2 w-2 h-2 bg-red-500 rounded-full border border-white"></span>
-             </button>
-             {isNotificationOpen && (
-                 <div className="absolute top-12 right-0 w-80 bg-white rounded-2xl shadow-xl border border-slate-100 p-4 z-50">
-                     <h3 className="font-bold text-slate-800 mb-3 text-sm">Notifikasi</h3>
-                     <div className="space-y-3">
-                         <div className="flex gap-3 p-2 hover:bg-slate-50 rounded-lg cursor-pointer">
-                             <div className="w-8 h-8 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center flex-shrink-0"><BookOpen size={14}/></div>
-                             <div><p className="text-xs font-bold text-slate-700">Tugas Baru Matematika</p><p className="text-[10px] text-slate-400">Baru saja</p></div>
-                         </div>
-                     </div>
+      <div className="min-h-screen bg-slate-50 font-sans flex">
+          <Sidebar activeView={activeView} setActiveView={setActiveView} user={user} onLogout={() => signOut(auth)} isMobileOpen={isMobileOpen} setIsMobileOpen={setIsMobileOpen} />
+          <main className="flex-1 md:ml-64 p-8">
+             {/* HEADER */}
+             <div className="flex justify-between items-center mb-8">
+                 <div className="md:hidden"><Menu onClick={()=>setIsMobileOpen(true)}/></div>
+                 <h1 className="text-2xl font-bold text-slate-800 capitalize">{activeView.replace('-',' ')}</h1>
+                 <div className="flex gap-4">
+                     <div className="bg-white p-2 rounded-full shadow-sm border"><Bell size={20} className="text-slate-400"/></div>
                  </div>
-             )}
-          </div>
-        </header>
-        <div className="p-6 lg:p-8 flex-1">
-          <AnimatePresence mode="wait">
-             {activeView === 'dashboard' && <motion.div key="dash" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><DashboardView user={user} courses={courses} onJoin={() => setIsJoinClassOpen(true)} /></motion.div>}
-             {activeView === 'courses' && !selectedCourse && (
-                <motion.div key="course-list" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-                    <div className="flex justify-between items-center mb-6"><h2 className="text-2xl font-bold text-slate-800">{user.role === 'teacher' ? "Kelola Kelas" : "Kelas Saya"}</h2>{user.role === 'student' && (<button onClick={() => setIsJoinClassOpen(true)} className="bg-teal-700 text-white px-4 py-2 rounded-xl font-bold shadow hover:bg-teal-800 transition-colors text-sm">+ Gabung Kelas</button>)}</div>
-                    {filteredCourses.length === 0 ? (<div className="text-center py-20 text-slate-400"><Search size={48} className="mx-auto mb-4 opacity-30" /><p>Tidak ada kelas yang cocok dengan "{searchQuery}"</p></div>) : (
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                            {filteredCourses.map(course => (
-                                <div key={course.id} onClick={() => { setSelectedCourse(course); setActiveView('course-detail'); }} className="bg-white border border-slate-200 rounded-2xl overflow-hidden cursor-pointer hover:border-teal-500 hover:shadow-lg transition-all group">
-                                    <div className={`h-32 ${course.color || 'bg-teal-600'} relative`}><div className="absolute -bottom-6 left-6 w-12 h-12 bg-white rounded-xl flex items-center justify-center text-teal-700 shadow-md border border-slate-100 group-hover:scale-110 transition-transform"><BookOpen size={24} /></div></div>
-                                    <div className="pt-8 pb-6 px-6"><div className="flex justify-between items-start mb-2"><h3 className="font-bold text-lg text-slate-800 leading-tight">{course.title}</h3><span className="text-[10px] font-mono bg-slate-100 px-2 py-1 rounded text-slate-500">{course.code}</span></div><p className="text-sm text-slate-500 line-clamp-2 mb-4">{course.description}</p></div>
+             </div>
+
+             <AnimatePresence mode="wait">
+                 {activeView === 'dashboard' && <motion.div key="dash" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><DashboardView user={user} courses={courses} onJoin={() => setIsJoinClassOpen(true)} /></motion.div>}
+                 
+                 {activeView === 'courses' && !selectedCourse && (
+                    <motion.div key="course-list" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                            {courses.map(c => (
+                                <div key={c.id} onClick={() => {setSelectedCourse(c); setActiveView('course-detail')}} className="bg-white p-6 rounded-2xl border cursor-pointer hover:shadow-lg transition-all">
+                                    <div className={`h-24 ${c.color} rounded-xl mb-4 shadow-sm`}></div>
+                                    <h3 className="font-bold text-lg">{c.title}</h3>
+                                    <p className="text-sm text-slate-500">{c.code}</p>
                                 </div>
                             ))}
-                            {user.role === 'teacher' && (<button onClick={() => setIsCreateClassOpen(true)} className="border-2 border-dashed border-slate-300 rounded-2xl flex flex-col items-center justify-center gap-3 text-slate-400 hover:border-teal-500 hover:text-teal-600 hover:bg-teal-50 transition-all min-h-[250px]"><div className="w-14 h-14 rounded-full bg-slate-100 flex items-center justify-center"><Plus size={32} /></div><span className="font-bold">Buat Kelas Baru</span></button>)}
+                            {user.role === 'teacher' && <button onClick={() => setIsCreateClassOpen(true)} className="border-2 border-dashed rounded-2xl flex flex-col items-center justify-center text-slate-400 font-bold hover:bg-slate-50 hover:text-slate-600 transition-all p-6"><Plus size={32}/> Buat Kelas</button>}
                         </div>
-                    )}
-                </motion.div>
-             )}
-             {activeView === 'course-detail' && selectedCourse && (
-                <motion.div key="course-detail" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-                    {user.role === 'teacher' 
-                        ? <TeacherCourseManager 
-                             course={selectedCourse} 
-                             onBack={() => { setSelectedCourse(null); setActiveView('courses'); }} 
-                             onUpdateModules={handleUpdateModules} 
-                             onGradeSubmission={handleGradeSubmission} 
-                             onUpdateDiscussions={handleUpdateDiscussions}
-                             onUpdateCourse={handleUpdateCourse}
-                          /> 
-                        : <StudentCourseView 
-                             course={selectedCourse} 
-                             user={user} 
-                             onBack={() => { setSelectedCourse(null); setActiveView('courses'); }} 
-                             onSubmitAssignment={handleSubmitAssignment} 
-                             onToggleComplete={handleToggleComplete} 
-                             onUpdateDiscussions={handleUpdateDiscussions} 
-                             flashcardDecks={flashcardDecks}
-                          />
-                    }
-                </motion.div>
-             )}
-             {activeView === 'quiz' && (<motion.div key="quiz" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }}><QuizView onFinish={() => setActiveView('course-detail')} /></motion.div>)}
-             {activeView === 'calendar' && <motion.div key="cal" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><CalendarView courses={courses} user={user} onUpdateCourse={handleUpdateCourse} personalEvents={personalEvents} setPersonalEvents={setPersonalEvents} /></motion.div>}
-             {activeView === 'library' && <motion.div key="lib" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><LibraryView /></motion.div>}
-             {activeView === 'messages' && <motion.div key="msg" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><MessagesView courses={courses} user={user} /></motion.div>}
-             {activeView === 'settings' && <motion.div key="set" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><SettingsView user={user} onUpdateUser={setUser} /></motion.div>}
-             {activeView === 'profile' && <motion.div key="profile" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><StudentProfileView user={user} /></motion.div>}
-             {activeView === 'kanban' && <motion.div key="kanban" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><KanbanBoard user={user} /></motion.div>}
-             {activeView === 'flashcards' && <motion.div key="flash" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><FlashcardView decks={flashcardDecks} onAddDeck={(newDeck) => setFlashcardDecks([...flashcardDecks, newDeck])} user={user} courses={courses} /></motion.div>}
-             {activeView === 'whiteboard' && <motion.div key="wb" initial={{ opacity: 0 }} animate={{ opacity: 1 }}><WhiteboardView /></motion.div>}
-          </AnimatePresence>
-        </div>
-      </main>
-      <CreateClassModal isOpen={isCreateClassOpen} onClose={() => setIsCreateClassOpen(false)} onSave={handleAddCourse} />
-      <JoinClassModal isOpen={isJoinClassOpen} onClose={() => setIsJoinClassOpen(false)} onJoin={handleJoinClass} />
-    </div>
+                    </motion.div>
+                 )}
+
+                 {activeView === 'course-detail' && selectedCourse && (
+                    <motion.div key="detail" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+                        {user.role === 'teacher' 
+                          ? <TeacherCourseManager course={selectedCourse} onBack={() => setSelectedCourse(null)} onUpdateModules={handleUpdateModules} onUpdateCourse={handleUpdateCourse} />
+                          : <StudentCourseView course={selectedCourse} user={user} onBack={() => setSelectedCourse(null)} onSubmitAssignment={handleSubmitAssignment} flashcardDecks={flashcardDecks} />
+                        }
+                    </motion.div>
+                 )}
+
+                 {activeView === 'calendar' && <CalendarView courses={courses} user={user} onUpdateCourse={handleUpdateCourse} personalEvents={personalEvents} setPersonalEvents={setPersonalEvents} />}
+                 {activeView === 'kanban' && <KanbanBoard user={user} />}
+                 {activeView === 'flashcards' && <FlashcardView decks={flashcardDecks} onAddDeck={(d) => setFlashcardDecks([...flashcardDecks, d])} user={user} courses={courses} />}
+                 {activeView === 'whiteboard' && <WhiteboardView />}
+                 {activeView === 'library' && <LibraryView />}
+                 {activeView === 'messages' && <MessagesView courses={courses} user={user} />}
+                 {activeView === 'profile' && <StudentProfileView user={user} />}
+                 {activeView === 'settings' && <SettingsView user={user} onUpdateUser={setUser} />}
+             </AnimatePresence>
+          </main>
+          <CreateClassModal isOpen={isCreateClassOpen} onClose={() => setIsCreateClassOpen(false)} onSave={handleAddCourse} />
+          <JoinClassModal isOpen={isJoinClassOpen} onClose={() => setIsJoinClassOpen(false)} onJoin={handleJoinClass} />
+      </div>
   );
 };
 
